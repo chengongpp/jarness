@@ -1,0 +1,11 @@
+target/
+dist/
+*.class
+*.log
+*.db
+*.db-journal
+.idea/
+*.iml
+.vscode/
+# local scratch space: holds machine-local endpoints/keys, never committed
+tmp/
