@@ -14,6 +14,11 @@
   <name>Jarness :: Core</name>
   <description>Runtime core: ModLoader, Supervisor, agent loop, session store, providers, built-in tools and templates.</description>
 
+  <properties>
+    <jarness.excludedGroups>integration</jarness.excludedGroups>
+    <jarness.it>false</jarness.it>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>ch.predmet.jarness</groupId>
@@ -58,7 +63,7 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <!-- Integration tests talk to a real model endpoint; opt in with -Djarness.it=true -->
-          <excludedGroups>integration</excludedGroups>
+          <excludedGroups>${jarness.excludedGroups}</excludedGroups>
           <systemPropertyVariables>
             <jarness.it>${jarness.it}</jarness.it>
           </systemPropertyVariables>

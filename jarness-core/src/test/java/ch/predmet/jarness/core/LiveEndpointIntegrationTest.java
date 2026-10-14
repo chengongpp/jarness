@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@code integration} tag.</p>
  */
 @Tag("integration")
-class LiveEndpointIT {
+class LiveEndpointIntegrationTest {
 
     @TempDir
     Path base;

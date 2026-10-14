@@ -30,6 +30,10 @@ public final class TestEndpoints {
     public static ProviderProfile gb10() {
         Path file = Path.of(System.getProperty("jarness.endpointFile", "tmp/endpoint.txt"));
         if (!Files.isRegularFile(file)) {
+            // surefire runs with the module dir as working directory; the file lives at the root
+            file = Path.of("..", "tmp", "endpoint.txt");
+        }
+        if (!Files.isRegularFile(file)) {
             throw new IllegalStateException("endpoint file not found: " + file.toAbsolutePath());
         }
         try {
