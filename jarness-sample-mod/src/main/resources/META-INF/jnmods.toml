@@ -1,0 +1,12 @@
+id = "jarness.sample"
+name = "Jarness Sample Mod"
+version = "0.1.0"
+description = "A tiny sample mod: contributes one echo tool, used to exercise dynamic loading."
+entrypoint = "ch.predmet.jarness.sample.SampleMod"
+
+[[dependencies]]
+modId = "jarness.core"
+version = "*"
+kind = "required"
+ordering = "after"
+reason = "needs the core tools to exist"

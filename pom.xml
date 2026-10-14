@@ -15,9 +15,9 @@
   <modules>
     <module>jarness-api</module>
     <module>jarness-core</module>
-    <module>jarness-cli</module>
-    <module>jarness-mod-tui</module>
     <module>jarness-sample-mod</module>
+    <module>jarness-mod-tui</module>
+    <module>jarness-cli</module>
   </modules>
 
   <properties>

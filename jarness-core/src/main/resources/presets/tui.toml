@@ -1,0 +1,8 @@
+name = "tui"
+description = "Terminal UI preset: core mod plus the TUI instrument."
+
+[instruments]
+"jarness.tui:tui.frontend" = true
+
+[defaults]
+template = "standard"
