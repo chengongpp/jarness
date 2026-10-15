@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# jn — Jarness launcher.
+#
+#   ./jn                       start the interactive TUI
+#   ./jn -c "prompt here"      one-shot: run the prompt and print the answer
+#   ./jn -c "prompt" -t full   one-shot with extra `jarness run` options
+#   ./jn <command> [args...]   pass-through to the CLI (mods, presets, templates, ...)
+#
+# The runtime jar is built into dist/ on first use (override with JN_JAR).
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR="${JN_JAR:-$DIR/dist/jarness.jar}"
+
+if [[ ! -f "$JAR" ]]; then
+    echo "jn: $JAR not found, building (make dist)..." >&2
+    make -C "$DIR" dist >&2
+fi
+
+JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
+
+if [[ $# -eq 0 ]]; then
+    exec "$JAVA" -jar "$JAR" tui
+fi
+
+if [[ "$1" == "-c" ]]; then
+    shift
+    if [[ $# -eq 0 ]]; then
+        echo "usage: jn -c \"prompt\" [run options...]" >&2
+        exit 2
+    fi
+    prompt="$1"; shift
+    exec "$JAVA" -jar "$JAR" run "$prompt" "$@"
+fi
+
+exec "$JAVA" -jar "$JAR" "$@"

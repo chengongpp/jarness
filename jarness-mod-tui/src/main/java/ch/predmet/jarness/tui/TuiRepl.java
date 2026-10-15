@@ -57,6 +57,8 @@ final class TuiRepl implements Runnable {
         } catch (IOException e) {
             out.println("tui: input failed: " + e.getMessage());
         }
+        // /quit or end of input leaves the TUI and stops the runtime.
+        runtime.close();
     }
 
     private void turn(String input) {

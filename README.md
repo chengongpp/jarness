@@ -16,10 +16,13 @@ Jarness 是一个基于 Java 21 LTS 的企业级多 Agent 运行时（架构草�
 ## 快速开始
 
 ```bash
-mvn package
-java -jar jarness-cli/target/jarness.jar presets
-java -jar jarness-cli/target/jarness.jar run "你好"
+make            # 打包到 dist/（dist/jarness.jar + dist/mods/*.jar）
+./jn            # 拉起交互式 TUI（tui preset）
+./jn -c "你好"  # 一次性运行（等价于 jarness run）
+./jn mods       # 透传其它 CLI 子命令（mods/presets/templates/providers/tui/run）
 ```
+
+也可以直接用 jar：`java -jar dist/jarness.jar run "你好"`。
 
 base dir 默认是 `$HOME/.local/share/jarness`：`mods/` 放外置 mod jar，`config/` 放配置
 （`jarness.toml`、`providers.toml`、以及以 mod id 命名的 per-mod 配置目录），`presets/` 放预设。
@@ -28,9 +31,8 @@ base dir 默认是 `$HOME/.local/share/jarness`：`mods/` 放外置 mod jar，`c
 ## 测试
 
 ```bash
-mvn test                                                   # 单元测试
-mvn -pl jarness-core test -Djarness.it=true \
-    -Djarness.excludedGroups= -Dgroups=integration        # 需要 tmp/endpoint.txt 的联调测试
+make test       # 单元测试
+make it         # 需要 tmp/endpoint.txt 的联调测试
 ```
 
 ## 设计决策

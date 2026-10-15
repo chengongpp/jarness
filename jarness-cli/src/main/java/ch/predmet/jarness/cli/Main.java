@@ -17,6 +17,7 @@ import java.nio.file.Path;
         description = "Jarness multi-agent runtime.",
         subcommands = {
                 RunCommand.class,
+                TuiCommand.class,
                 ModsCommand.class,
                 PresetsCommand.class,
                 TemplatesCommand.class,
