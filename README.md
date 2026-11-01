@@ -55,6 +55,12 @@ mode = "relay"          # 或 "local"
 policy = "allow"        # allow | ask | never
 allow = ["write"]       # policy=never 时的白名单
 timeout_seconds = 300   # policy=ask 的等待上限
+
+# 可选：接受远端 executor 回连（目前无 TLS，Q36 未定；仅建议 loopback/可信网络）
+# remote_enabled = true
+# remote_host = "127.0.0.1"
+# remote_port = 0
+# remote_token = "change-me"
 ```
 
 ## Agent、namespace 与能力

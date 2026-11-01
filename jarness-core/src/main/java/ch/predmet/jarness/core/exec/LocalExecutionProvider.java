@@ -60,6 +60,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final String id;
+    private final ExecProviderKind kind;
     private final String token;
     private final Path binary;
     private final ServerSocket server;
@@ -74,9 +75,10 @@ public final class LocalExecutionProvider implements ExecutionProvider {
     private volatile boolean closed;
     private volatile String executorId = "local";
 
-    private LocalExecutionProvider(String token, Path binary, ServerSocket server, Process process, Socket socket)
-            throws IOException {
-        this.id = "local-executor";
+    private LocalExecutionProvider(String id, ExecProviderKind kind, String token, Path binary,
+                                   ServerSocket server, Process process, Socket socket) throws IOException {
+        this.id = id;
+        this.kind = kind;
         this.token = token;
         this.binary = binary;
         this.server = server;
@@ -112,7 +114,8 @@ public final class LocalExecutionProvider implements ExecutionProvider {
             process = builder.start();
             socket = server.accept();
             socket.setTcpNoDelay(true);
-            return new LocalExecutionProvider(token, binary, server, process, socket);
+            return new LocalExecutionProvider("local-executor", ExecProviderKind.LOCAL, token, binary, server,
+                    process, socket);
         } catch (IOException | RuntimeException e) {
             if (socket != null) {
                 try {
@@ -131,6 +134,21 @@ public final class LocalExecutionProvider implements ExecutionProvider {
             }
             throw e;
         }
+    }
+
+    /**
+     * Adopt an executor connection accepted by a {@link RemoteExecutorServer}.
+     *
+     * @param id     provider id, unique among remote executors
+     * @param token  enrollment token shared with the executor
+     * @param socket accepted socket
+     * @return the provider
+     * @throws IOException when the handshake fails
+     */
+    public static LocalExecutionProvider acceptRemote(String id, String token, Socket socket) throws IOException {
+        socket.setSoTimeout(20_000);
+        socket.setTcpNoDelay(true);
+        return new LocalExecutionProvider(id, ExecProviderKind.REMOTE, token, null, null, null, socket);
     }
 
     /**
@@ -216,7 +234,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
 
     @Override
     public ExecProviderKind kind() {
-        return ExecProviderKind.LOCAL;
+        return kind;
     }
 
     @Override
@@ -231,7 +249,10 @@ public final class LocalExecutionProvider implements ExecutionProvider {
 
     @Override
     public boolean alive() {
-        return !closed && process.isAlive() && socket.isConnected() && !socket.isClosed();
+        if (closed || !socket.isConnected() || socket.isClosed()) {
+            return false;
+        }
+        return kind == ExecProviderKind.REMOTE || (process != null && process.isAlive());
     }
 
     @Override
@@ -436,19 +457,23 @@ public final class LocalExecutionProvider implements ExecutionProvider {
         } catch (IOException ignored) {
             // best effort
         }
-        try {
-            server.close();
-        } catch (IOException ignored) {
-            // best effort
+        if (server != null) {
+            try {
+                server.close();
+            } catch (IOException ignored) {
+                // best effort
+            }
         }
-        process.destroy();
-        try {
-            if (!process.waitFor(2, TimeUnit.SECONDS)) {
+        if (process != null) {
+            process.destroy();
+            try {
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 process.destroyForcibly();
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
         }
         failPending("executor stopped");
     }

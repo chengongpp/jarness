@@ -40,6 +40,7 @@ import ch.predmet.jarness.core.agent.SupervisorImpl;
 import ch.predmet.jarness.core.config.ConfigLoader;
 import ch.predmet.jarness.core.exec.ExecutionRegistryImpl;
 import ch.predmet.jarness.core.exec.LocalExecutionProvider;
+import ch.predmet.jarness.core.exec.RemoteExecutorServer;
 import ch.predmet.jarness.core.ipc.IpcRegistryImpl;
 import ch.predmet.jarness.core.config.PresetLoader;
 import ch.predmet.jarness.core.hook.HookBusImpl;
@@ -87,6 +88,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     private final ApprovalRegistryImpl approvalRegistry;
     private final IpcRegistryImpl ipcRegistry;
     private final RegistryImpl registry;
+    private volatile RemoteExecutorServer remoteExecutorServer;
     private final ObservationImpl observation;
     private final LoopHookRegistryImpl loopHooks;
     private final Map<String, SessionStore> stores;
@@ -242,6 +244,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         running = true;
         registry.bump();
         startExecutor();
+        startRemoteExecutor();
         warnAboutMissingTemplates();
         hookBus.emit(HookPoint.RUNTIME_START, this);
         log.info("jarness {} started (base {}, preset {}, namespaces {}, mods {})",
@@ -312,6 +315,11 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         }
         stores.clear();
         jobRegistry.shutdown();
+        RemoteExecutorServer remote = remoteExecutorServer;
+        if (remote != null) {
+            remote.close();
+            remoteExecutorServer = null;
+        }
         executionRegistry.shutdown();
         ipcRegistry.close();
         observation.close();
@@ -334,6 +342,31 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         } catch (Exception e) {
             log.warn("could not start the local executor: {}. RELAY tools will fail until it is built "
                     + "(make executor) or execution.mode is set to local", e.getMessage());
+        }
+    }
+
+    /** Start the opt-in remote executor listener. */
+    private void startRemoteExecutor() {
+        if (!config.raw().bool("execution.remote_enabled", false)) {
+            return;
+        }
+        if (config.raw().bool("execution.remote_tls", false)) {
+            log.warn("execution.remote_tls is not implemented yet (design Q36); starting the remote "
+                    + "listener without TLS on the configured host/port");
+        }
+        String token = config.raw().string("execution.remote_token", "");
+        if (token.isBlank()) {
+            log.warn("execution.remote_enabled is true but execution.remote_token is blank; "
+                    + "the remote listener will not start");
+            return;
+        }
+        String host = config.raw().string("execution.remote_host", "127.0.0.1");
+        int port = config.raw().integer("execution.remote_port", 0);
+        try {
+            remoteExecutorServer = RemoteExecutorServer.start(host, port, token, executionRegistry);
+            log.info("remote executor listener started on {}:{}", host, remoteExecutorServer.port());
+        } catch (Exception e) {
+            log.warn("could not start the remote executor listener: {}", e.getMessage());
         }
     }
 

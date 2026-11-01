@@ -209,3 +209,12 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 - **lazy 的 super 与 restart 的组合**：super 自身失败时 restart 逻辑会尝试以 pid 0 的 parent 重建；
   由于 super 已在 registry 里，这条路径目前会拒绝并记日志，不递归。真实部署里 super 的失败应由
   外部平台重启 daemon。
+
+## 21. 远端 executor 的取舍（2026-11-01）
+
+- **daemon 是 listener，executor 回连**：本地/远端共用方向；远端部署不需要给 daemon 开入站到 executor
+  的端口。`RemoteExecutorServer` 接受连接、校验 enrollment token，再把连接包装成 REMOTE provider。
+- **enrollment token 放在 env**：与本地 executor 一致，不出现在进程命令行；每个 call 仍有 HMAC。
+- **TLS 暂不做**：Q36 未定（远端是否强制 TLS、secret 轮换策略）。先提供 `remote_tls` 开关，但开启时
+  只记录警告并退回明文回环，避免给出「看起来安全、实际没有」的假象。Q36 定案后把 `SSLServerSocket`
+  和 rustls 客户端接到同一协议即可。

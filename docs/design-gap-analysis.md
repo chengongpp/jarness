@@ -243,7 +243,7 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 
 **明确未实现（开放问题，不是遗漏）**：
 
-- **remote executor / TLS / enrollment**：设计把它标为可选，且 Q36（远端 TLS 是否强制、secret 轮换）、Q37（帧格式）仍是待定；本地 executor 已完整，远端沿用同一协议的扩展点留待 Q36 定案。
+- **remote TLS / enrollment 轮换**：remote listener 与 enrollment token 已实现（见 §13），但 Q36（远端 TLS 是否强制、secret 轮换）仍未定；当前没有 TLS，`remote_tls=true` 仅警告并退化为 loopback 明文。
 - **Q38**：模型档位覆盖的约束。
 - **per-stream credit / progress 帧**：本地调用是请求-结果多路复用，没有流控和进度回调。
 - **净网工具**：`web_search/web_fetch` 仍在 daemon 内（NET 能力门在工具级），executor 的 net.fetch 与 NET scope 强制未做。
@@ -260,3 +260,13 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 | I5 副作用只从 core/executor 强制点 | 部分；默认 relay 从 executor 出，`execution.mode=local` 仍可在 daemon 内 |
 | I6 spawn=exec / fork=fork | 是；fork 复制消息（旧 turn 的镜像复制待细化） |
 | I7 ModelProfile 属 ns | 是；模板无模型字段，manifest/request 可覆盖（Q38） |
+
+## 13. P5 远端补充（2026-11-01，第二轮）
+
+- **remote executor（已实现，无 TLS）**：`[execution] remote_enabled/remote_host/remote_port/remote_token`
+  启动 `RemoteExecutorServer`；执行器进程用 `--connect daemon:port` + `JARNESS_EXECUTOR_TOKEN`
+  回连，daemon 校验 enrollment token 后把它注册为 `REMOTE` provider；之后与本地 executor 走同一套
+  JSON-lines + per-call HMAC。
+- **测试**：`RemoteExecutorTest` 在 loopback 上启动第二个 executor 进程，完成 `fs.write` 并落盘。
+- **TLS 仍未实现**：Q36 未定；`execution.remote_tls=true` 目前会记录警告并退化为明文回环监听。
+  远端部署在 Q36 定案前不应跨越不可信网络。
