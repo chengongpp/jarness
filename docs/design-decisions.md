@@ -214,6 +214,23 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 
 - **daemon 是 listener，executor 回连**：本地/远端共用方向；远端部署不需要在 daemon 上额外开放 executor 的入站端口。`RemoteExecutorServer` 接受连接、校验 enrollment token，再把连接包装成 REMOTE provider。
 - **enrollment token 放在 env**：与本地 executor 一致，不出现在进程命令行；每个 call 仍有 HMAC。
-- **TLS 暂不做**：Q36 未定（远端是否强制 TLS、secret 轮换策略）。先提供 `remote_tls` 开关，但开启时
-  只记录警告并退回明文回环，避免给出「看起来安全、实际没有」的假象。Q36 定案后把 `SSLServerSocket`
-  和 rustls 客户端接到同一协议即可。
+- **TLS 用 PKCS12 + rustls**：daemon 侧 `SSLServerSocket` 从 PKCS12 keystore 取服务端证书；
+  executor 侧用 `--ca` 做 CA 校验。`remote_tls=true` 而 keystore 缺失时直接不启动，避免「看起来安全、
+  实际明文」。Q36 剩下的只是 secret 轮换策略，不是传输层。
+- **executor 的 TLS I/O 是单线程 drain/read 循环**：TLS 流不能像 TcpStream 那样 clone 成读写两半；
+  executor 用一个 20ms read timeout 的主循环同时写出站帧和读入站帧，call 线程只往 outbox 放结果。
+  明文与 TLS 共用这个循环，避免两套路径。
+
+
+## 22. TLS 与 net.fetch 的落地（2026-11-01）
+
+- **TLS 用 PKCS12 + rustls**：daemon 侧 `SSLServerSocket` 从 PKCS12 keystore 取服务端证书；
+  executor 侧 `--tls --ca` 做 CA 校验。`remote_tls=true` 而 keystore 缺失时直接不启动，避免
+  「看起来安全、实际明文」。Q36 剩下的只是 secret 轮换，不是传输层。
+- **TLS 的 I/O 用单线程 drain/read 循环**：TLS 流不能像 TcpStream 那样 clone 成读写两半；
+  executor 用一个 20ms read timeout 的主循环同时写出站帧、读入站帧，call 线程只往 outbox 放结果。
+  明文与 TLS 共用这一条路径。
+- **net.fetch 在 executor**：用 ureq 取 HTTP(S)，先校验 NET capability（host scope），再剥 HTML
+  标签、截断 20000 字符；`web_fetch` relay 时走它，`web_search` 暂时留在 daemon。
+- **rustls provider**：同时编进 ring 与 aws-lc-rs 时必须显式 `install_default`；executor 启动时
+  安装 ring provider。

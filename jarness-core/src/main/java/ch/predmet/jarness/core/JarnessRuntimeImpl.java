@@ -58,6 +58,12 @@ import ch.predmet.jarness.core.tool.ToolRegistryImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -350,9 +356,14 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         if (!config.raw().bool("execution.remote_enabled", false)) {
             return;
         }
-        if (config.raw().bool("execution.remote_tls", false)) {
-            log.warn("execution.remote_tls is not implemented yet (design Q36); starting the remote "
-                    + "listener without TLS on the configured host/port");
+        boolean tls = config.raw().bool("execution.remote_tls", false);
+        SSLContext tlsContext;
+        try {
+            tlsContext = tls ? remoteTlsContext() : null;
+        } catch (Exception e) {
+            log.error("execution.remote_tls is enabled but the keystore could not be loaded: {}. "
+                    + "Not starting the remote listener in plaintext", e.getMessage());
+            return;
         }
         String token = config.raw().string("execution.remote_token", "");
         if (token.isBlank()) {
@@ -363,11 +374,40 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         String host = config.raw().string("execution.remote_host", "127.0.0.1");
         int port = config.raw().integer("execution.remote_port", 0);
         try {
-            remoteExecutorServer = RemoteExecutorServer.start(host, port, token, executionRegistry);
-            log.info("remote executor listener started on {}:{}", host, remoteExecutorServer.port());
+            remoteExecutorServer = RemoteExecutorServer.start(host, port, token, executionRegistry, tlsContext);
+            log.info("remote executor listener started on {}:{}{}", host, remoteExecutorServer.port(),
+                    tls ? " (TLS)" : " (plaintext)");
         } catch (Exception e) {
             log.warn("could not start the remote executor listener: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Load the remote listener's PKCS12 keystore.
+     *
+     * @return the server SSL context
+     * @throws Exception when the keystore is missing or unreadable
+     */
+    private SSLContext remoteTlsContext() throws Exception {
+        String keystore = config.raw().string("execution.remote_keystore", "");
+        if (keystore.isBlank()) {
+            throw new IllegalStateException("execution.remote_keystore is required when remote_tls is true");
+        }
+        String password = config.raw().string("execution.remote_keystore_password", "changeit");
+        Path path = Path.of(keystore);
+        if (!Files.isRegularFile(path)) {
+            throw new IllegalStateException("keystore not found: " + path);
+        }
+        char[] secret = password.toCharArray();
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        try (InputStream in = Files.newInputStream(path)) {
+            store.load(in, secret);
+        }
+        KeyManagerFactory managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        managers.init(store, secret);
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(managers.getKeyManagers(), null, null);
+        return context;
     }
 
     private SessionStore store(String jdbcUrl) {

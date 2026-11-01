@@ -56,12 +56,18 @@ policy = "allow"        # allow | ask | never
 allow = ["write"]       # policy=never 时的白名单
 timeout_seconds = 300   # policy=ask 的等待上限
 
-# 可选：接受远端 executor 回连（目前无 TLS，Q36 未定；仅建议 loopback/可信网络）
+# 可选：接受远端 executor 回连
 # remote_enabled = true
 # remote_host = "127.0.0.1"
 # remote_port = 0
 # remote_token = "change-me"
+# remote_tls = true                     # 需要 PKCS12 keystore
+# remote_keystore = "/etc/jarness/server.p12"
+# remote_keystore_password = "changeit"
 ```
+
+远端 executor 用 `--connect host:port --tls --ca server.pem` 启动，token 放在
+`JARNESS_EXECUTOR_TOKEN`。`remote_tls=true` 但 keystore 缺失时 remote listener 不会启动（不会退化成明文）。
 
 ## Agent、namespace 与能力
 

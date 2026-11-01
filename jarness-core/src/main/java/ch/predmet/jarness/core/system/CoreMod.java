@@ -97,7 +97,7 @@ public final class CoreMod implements JarnessMod {
         ctx.instruments().register("tools.web", true, 220,
                 "Web access: web_search, web_fetch.", ic -> {
                     ic.tools().register(CapabilityTool.of(new WebSearchTool(), CapKind.NET));
-                    ic.tools().register(CapabilityTool.of(new WebFetchTool(), CapKind.NET));
+                    register(ic.tools(), relay, CapabilityTool.of(new WebFetchTool(), CapKind.NET), "net.fetch");
                 });
 
         ctx.instruments().register("tools.agent", true, 230,

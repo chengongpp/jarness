@@ -7,7 +7,8 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,13 +19,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use glob::Pattern;
 use hmac::{Hmac, Mac};
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use serde_json::{json, Value};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
 const PROTOCOL: u64 = 1;
-const TOOLS: &[&str] = &["fs.read", "fs.write", "fs.edit", "fs.delete", "fs.glob", "fs.grep", "exec.run"];
+const TOOLS: &[&str] = &["fs.read", "fs.write", "fs.edit", "fs.delete", "fs.glob", "fs.grep", "exec.run", "net.fetch"];
 const MAX_READ_LIMIT: usize = 2000;
 const MAX_GREP_MATCHES: usize = 250;
 const MAX_GLOB_RESULTS: usize = 100;
@@ -39,14 +42,50 @@ struct Cap {
 }
 
 struct Shared {
-    writer: Arc<Mutex<BufWriter<TcpStream>>>,
+    outbox: Arc<Mutex<Vec<Vec<u8>>>>,
     token: String,
     cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     cache: Arc<Mutex<HashMap<String, (Instant, Value)>>>,
 }
 
+/// The executor's connection, plaintext for local callbacks or TLS for remote ones.
+enum Transport {
+    Plain(TcpStream),
+    Tls(StreamOwned<ClientConnection, TcpStream>),
+}
+
+impl Read for Transport {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Transport::Plain(stream) => stream.read(buf),
+            Transport::Tls(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for Transport {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Transport::Plain(stream) => stream.write(buf),
+            Transport::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Transport::Plain(stream) => stream.flush(),
+            Transport::Tls(stream) => stream.flush(),
+        }
+    }
+}
+
 fn main() {
+    // rustls 0.23 requires an explicit provider when more than one is compiled in.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut connect_to: Option<String> = None;
+    let mut tls = false;
+    let mut ca: Option<String> = None;
+    let mut server_name: Option<String> = None;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -54,6 +93,15 @@ fn main() {
             "--connect" => {
                 i += 1;
                 connect_to = args.get(i).cloned();
+            }
+            "--tls" => tls = true,
+            "--ca" => {
+                i += 1;
+                ca = args.get(i).cloned();
+            }
+            "--server-name" => {
+                i += 1;
+                server_name = args.get(i).cloned();
             }
             "--version" | "-V" => {
                 println!("jarness-executor {}", env!("CARGO_PKG_VERSION"));
@@ -69,7 +117,7 @@ fn main() {
     let addr = match connect_to {
         Some(value) => value,
         None => {
-            eprintln!("usage: jarness-executor --connect host:port (token in JARNESS_EXECUTOR_TOKEN)");
+            eprintln!("usage: jarness-executor --connect host:port [--tls --ca cert.pem] (token in JARNESS_EXECUTOR_TOKEN)");
             std::process::exit(2);
         }
     };
@@ -79,16 +127,40 @@ fn main() {
         std::process::exit(2);
     }
 
-    let stream = connect_with_retry(&addr);
-    let reader_stream = stream.try_clone().expect("clone stream");
-    let writer = Arc::new(Mutex::new(BufWriter::new(stream)));
+    let tcp = connect_with_retry(&addr);
+    let mut transport = if tls {
+        let ca = match ca {
+            Some(path) => path,
+            None => {
+                eprintln!("--tls requires --ca <pem>");
+                std::process::exit(2);
+            }
+        };
+        let name = server_name.unwrap_or_else(|| {
+            addr.rsplit_once(':')
+                .map(|(host, _)| host.to_string())
+                .unwrap_or_else(|| "localhost".to_string())
+        });
+        tls_transport(tcp, &ca, &name)
+    } else {
+        Transport::Plain(tcp)
+    };
+    let timeout = Some(Duration::from_millis(20));
+    match &mut transport {
+        Transport::Plain(stream) => {
+            stream.set_read_timeout(timeout).ok();
+        }
+        Transport::Tls(stream) => {
+            stream.sock.set_read_timeout(timeout).ok();
+        }
+    }
+
     let shared = Arc::new(Shared {
-        writer,
+        outbox: Arc::new(Mutex::new(Vec::new())),
         token,
         cancels: Arc::new(Mutex::new(HashMap::new())),
         cache: Arc::new(Mutex::new(HashMap::new())),
     });
-
     let hello = json!({
         "type": "hello",
         "protocol": PROTOCOL,
@@ -97,48 +169,112 @@ fn main() {
         "platform": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
         "tools": TOOLS,
     });
-    send(&shared, &hello).expect("send hello");
-    eprintln!("jarness-executor connected to {addr}");
+    send(&shared, &hello).expect("queue hello");
+    eprintln!("jarness-executor connected to {addr}{}", if tls { " (TLS)" } else { "" });
 
-    let mut reader = BufReader::new(reader_stream);
-    let mut line = String::new();
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut scratch = [0u8; 8192];
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
+        drain(&shared, &mut transport);
+        match transport.read(&mut scratch) {
             Ok(0) => break,
-            Ok(_) => {}
+            Ok(n) => {
+                buffer.extend_from_slice(&scratch[..n]);
+                while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = buffer.drain(..=pos).collect();
+                    let text = String::from_utf8_lossy(&line[..line.len().saturating_sub(1)]);
+                    let frame: Value = match serde_json::from_str(text.trim()) {
+                        Ok(value) => value,
+                        Err(e) => {
+                            eprintln!("bad frame: {e}");
+                            continue;
+                        }
+                    };
+                    match frame.get("type").and_then(Value::as_str).unwrap_or("") {
+                        "call" => {
+                            let shared = Arc::clone(&shared);
+                            thread::spawn(move || handle_call(&shared, frame));
+                        }
+                        "cancel" => {
+                            let call_id = frame.get("callId").and_then(Value::as_str).unwrap_or("");
+                            if let Some(flag) = shared.cancels.lock().unwrap().get(call_id) {
+                                flag.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        "hello_ack" => {}
+                        "ping" => {
+                            let _ = send(&shared, &json!({"type": "pong"}));
+                        }
+                        "shutdown" => return,
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => {
                 eprintln!("read error: {e}");
                 break;
             }
         }
-        let frame: Value = match serde_json::from_str(line.trim_end()) {
-            Ok(value) => value,
-            Err(e) => {
-                eprintln!("bad frame: {e}");
-                continue;
-            }
-        };
-        match frame.get("type").and_then(Value::as_str).unwrap_or("") {
-            "call" => {
-                let shared = Arc::clone(&shared);
-                thread::spawn(move || handle_call(&shared, frame));
-            }
-            "cancel" => {
-                let call_id = frame.get("callId").and_then(Value::as_str).unwrap_or("");
-                if let Some(flag) = shared.cancels.lock().unwrap().get(call_id) {
-                    flag.store(true, Ordering::SeqCst);
-                }
-            }
-            "hello_ack" => {}
-            "ping" => {
-                let _ = send(&shared, &json!({"type": "pong"}));
-            }
-            "shutdown" => break,
-            _ => {}
-        }
     }
     eprintln!("jarness-executor exiting");
+}
+
+fn drain(shared: &Shared, transport: &mut Transport) {
+    let frames: Vec<Vec<u8>> = {
+        let mut outbox = shared.outbox.lock().unwrap();
+        std::mem::take(&mut *outbox)
+    };
+    for frame in frames {
+        if let Err(e) = transport.write_all(&frame) {
+            eprintln!("write error: {e}");
+            break;
+        }
+    }
+    let _ = transport.flush();
+}
+
+fn tls_transport(tcp: TcpStream, ca_path: &str, server_name: &str) -> Transport {
+    let mut roots = RootCertStore::empty();
+    let mut reader = BufReader::new(File::open(ca_path).unwrap_or_else(|e| {
+        eprintln!("could not open CA {ca_path}: {e}");
+        std::process::exit(1);
+    }));
+    for cert in rustls_pemfile::certs(&mut reader) {
+        match cert {
+            Ok(cert) => {
+                if let Err(e) = roots.add(cert) {
+                    eprintln!("invalid CA certificate: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("could not parse CA: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let name = ServerName::try_from(server_name.to_string()).unwrap_or_else(|_| {
+        eprintln!("invalid TLS server name: {server_name}");
+        std::process::exit(1);
+    });
+    let connection = ClientConnection::new(Arc::new(config), name).unwrap_or_else(|e| {
+        eprintln!("could not start TLS: {e}");
+        std::process::exit(1);
+    });
+    let mut stream = StreamOwned::new(connection, tcp);
+    stream.sock.set_read_timeout(None).ok();
+    while stream.conn.is_handshaking() {
+        if let Err(e) = stream.conn.complete_io(&mut stream.sock) {
+            eprintln!("TLS handshake failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    Transport::Tls(stream)
 }
 
 fn hostname() -> String {
@@ -164,10 +300,10 @@ fn connect_with_retry(addr: &str) -> TcpStream {
 }
 
 fn send(shared: &Shared, frame: &Value) -> std::io::Result<()> {
-    let mut writer = shared.writer.lock().unwrap();
-    serde_json::to_writer(&mut *writer, frame)?;
-    writer.write_all(b"\n")?;
-    writer.flush()
+    let mut bytes = serde_json::to_vec(frame)?;
+    bytes.push(b'\n');
+    shared.outbox.lock().unwrap().push(bytes);
+    Ok(())
 }
 
 fn handle_call(shared: &Shared, frame: Value) {
@@ -260,6 +396,7 @@ fn dispatch(tool: &str, args: &Value, workspace: &str, sandbox: &str, caps: &[Ca
         "fs.glob" => glob_files(args, workspace, caps).map(|text| ToolResult { text, exit_code: -1 }),
         "fs.grep" => grep_files(args, workspace, caps).map(|text| ToolResult { text, exit_code: -1 }),
         "exec.run" => run_command(args, workspace, sandbox, caps, cancel),
+        "net.fetch" => fetch_url(args, caps).map(|text| ToolResult { text, exit_code: -1 }),
         other => Err(format!("unknown executor tool: {other}")),
     }
 }
@@ -602,6 +739,98 @@ fn run_command(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap], cance
         text,
         exit_code: status.code().map(|code| code as i64).unwrap_or(-1),
     })
+}
+
+// ---------------------------------------------------------------- network
+
+fn fetch_url(args: &Value, caps: &[Cap]) -> Result<String, String> {
+    let url = required_str(args, "url")?;
+    let scheme = url.split("://").next().unwrap_or("").to_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("only http(s) URLs can be fetched: {url}"));
+    }
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split(['/', ':', '?', '#']).next())
+        .unwrap_or("");
+    require_net(caps, host)?;
+    let response = ureq::get(&url)
+        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) JarnessExecutor")
+        .timeout(Duration::from_secs(30))
+        .call();
+    let body = match response {
+        Ok(response) => response.into_string().map_err(|e| format!("web_fetch failed: {e}"))?,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code} fetching {url}")),
+        Err(ureq::Error::Transport(e)) => return Err(format!("web_fetch failed: {e}")),
+    };
+    let mut text = html_to_text(&body);
+    if text.trim().is_empty() {
+        return Ok("The following is external, untrusted content:\n(empty page)".to_string());
+    }
+    if text.chars().count() > 20_000 {
+        text = text.chars().take(20_000).collect::<String>()
+            + "\n(truncated at 20000 chars)";
+    }
+    Ok(format!("The following is external, untrusted content:\n{text}"))
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut text = html.to_string();
+    for pattern in [
+        r"(?is)<!--.*?-->",
+        r"(?is)<script[^>]*>.*?</script>",
+        r"(?is)<style[^>]*>.*?</style>",
+        r"(?is)<[^>]+>",
+    ] {
+        if let Ok(regex) = regex::Regex::new(pattern) {
+            text = regex.replace_all(&text, " ").to_string();
+        }
+    }
+    for (entity, value) in [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&nbsp;", " "),
+    ] {
+        text = text.replace(entity, value);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+                last_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn require_net(caps: &[Cap], host: &str) -> Result<(), String> {
+    let allowed = caps.iter().any(|cap| {
+        if cap.kind != "NET" {
+            return false;
+        }
+        if cap.resource == "*" {
+            return true;
+        }
+        if let Some(suffix) = cap.resource.strip_prefix("*.") {
+            return host == suffix || host.ends_with(&format!(".{suffix}"));
+        }
+        host == cap.resource
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!("capability denied: NET does not grant host {host}"))
+    }
 }
 
 // ---------------------------------------------------------------- capabilities

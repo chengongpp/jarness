@@ -178,7 +178,7 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 未闭环：
 
 - **ASYNC**：`ToolMode.ASYNC` 已在 API/协议里，但异步结果要经 mailbox 开新 turn，属于 P3；当前 relay 一律 SYNC。
-- **net 工具**：`web_search`/`web_fetch` 仍是 LOCAL；executor 的 `net.fetch` 与 NET scope 强制放 P5，和 remote executor 一起做。
+- **net 工具**：`web_fetch` 在 relay 模式走 executor 的 `net.fetch`（NET scope 强制）；`web_search` 仍是 daemon 内实现（DuckDuckGo HTML 抓取）。
 - **流控/进度**：协议有 call/cancel/result，没有 per-stream credit 与 progress 帧；P5 补。
 - **executor 崩溃重启**：provider 标 dead、在飞调用失败；自动重启交给 P5 的 restart policy。
 - **审批异步挂起**：ASK 现在同步调 handler（虚拟线程阻塞）；`ask` 的「挂起 → 决策事件 → 继续」复用 P3 的 mailbox。
@@ -243,7 +243,7 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 
 **明确未实现（开放问题，不是遗漏）**：
 
-- **remote TLS / enrollment 轮换**：remote listener 与 enrollment token 已实现（见 §13），但 Q36（远端 TLS 是否强制、secret 轮换）仍未定；当前没有 TLS，`remote_tls=true` 仅警告并退化为 loopback 明文。
+- **enrollment secret 轮换**：TLS + 静态 enrollment token 已实现（见 §13）；Q36 的“轮换策略”仍未实现（重启才能换 token）。
 - **Q38**：模型档位覆盖的约束。
 - **per-stream credit / progress 帧**：本地调用是请求-结果多路复用，没有流控和进度回调。
 - **净网工具**：`web_search/web_fetch` 仍在 daemon 内（NET 能力门在工具级），executor 的 net.fetch 与 NET scope 强制未做。
@@ -263,10 +263,16 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 
 ## 13. P5 远端补充（2026-11-01，第二轮）
 
-- **remote executor（已实现，无 TLS）**：`[execution] remote_enabled/remote_host/remote_port/remote_token`
+- **remote executor**：`[execution] remote_enabled/remote_host/remote_port/remote_token`
   启动 `RemoteExecutorServer`；执行器进程用 `--connect daemon:port` + `JARNESS_EXECUTOR_TOKEN`
   回连，daemon 校验 enrollment token 后把它注册为 `REMOTE` provider；之后与本地 executor 走同一套
   JSON-lines + per-call HMAC。
-- **测试**：`RemoteExecutorTest` 在 loopback 上启动第二个 executor 进程，完成 `fs.write` 并落盘。
-- **TLS 仍未实现**：Q36 未定；`execution.remote_tls=true` 目前会记录警告并退化为明文回环监听。
-  远端部署在 Q36 定案前不应跨越不可信网络。
+- **TLS**：`remote_tls=true` 时 daemon 用 PKCS12 keystore（`remote_keystore` /
+  `remote_keystore_password`）创建 `SSLServerSocket`；executor 用 `--tls --ca <pem>`（rustls +
+  CA 校验）。keystore 缺失时**拒绝启动**，不会退化为明文。`RemoteTlsExecutorTest` 覆盖
+  keytool 生成证书 + CA 校验 + 远端 `fs.write`。
+- **net.fetch**：executor 新增 `net.fetch`，校验 NET scope（`*` / 精确 host / `*.domain`），
+  取回 HTML 后剥标签并截断；`web_fetch` 在 relay 模式走它，`web_search` 仍是 daemon 内实现。
+- **enrollment**：静态 enrollment token（env 传递，per-call HMAC）；**secret 轮换**仍是 Q36 的
+  开放部分，当前重启 daemon/executor 才能换 token。
+- **测试**：`RemoteExecutorTest`（明文回环）、`RemoteTlsExecutorTest`（TLS）。

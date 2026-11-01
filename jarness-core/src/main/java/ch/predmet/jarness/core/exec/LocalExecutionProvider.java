@@ -244,7 +244,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
 
     @Override
     public Set<CapKind> capabilities() {
-        return Set.of(CapKind.FS_READ, CapKind.FS_WRITE, CapKind.EXEC);
+        return Set.of(CapKind.FS_READ, CapKind.FS_WRITE, CapKind.EXEC, CapKind.NET);
     }
 
     @Override

@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import javax.net.ssl.SSLContext;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
@@ -52,15 +53,32 @@ public final class RemoteExecutorServer implements AutoCloseable {
      */
     public static RemoteExecutorServer start(String host, int port, String token, ExecutionRegistry registry)
             throws IOException {
+        return start(host, port, token, registry, null);
+    }
+
+    /**
+     * Bind and start accepting remote executors, optionally over TLS.
+     *
+     * @param host     bind address
+     * @param port     bind port; {@code 0} for an ephemeral port
+     * @param token    enrollment token the executor must present
+     * @param registry registry to add providers to
+     * @param tls      TLS context, or {@code null} for plaintext loopback
+     * @return the server
+     * @throws IOException when the socket cannot be bound
+     */
+    public static RemoteExecutorServer start(String host, int port, String token, ExecutionRegistry registry,
+                                             SSLContext tls) throws IOException {
         if (token == null || token.isBlank()) {
             throw new IllegalArgumentException("remote enrollment token must not be blank");
         }
-        ServerSocket socket = new ServerSocket();
+        ServerSocket socket = tls == null ? new ServerSocket()
+                : tls.getServerSocketFactory().createServerSocket();
         socket.setReuseAddress(true);
         socket.bind(new InetSocketAddress(host == null || host.isBlank() ? "127.0.0.1" : host, port));
         RemoteExecutorServer server = new RemoteExecutorServer(socket, token, registry);
-        LOG.info("remote executor listener on {}:{}", socket.getInetAddress().getHostAddress(),
-                socket.getLocalPort());
+        LOG.info("remote executor listener on {}:{} ({})", socket.getInetAddress().getHostAddress(),
+                socket.getLocalPort(), tls == null ? "plaintext" : "TLS");
         return server;
     }
 
