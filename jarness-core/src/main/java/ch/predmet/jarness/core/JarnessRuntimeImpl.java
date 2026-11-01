@@ -3,6 +3,7 @@ package ch.predmet.jarness.core;
 import ch.predmet.jarness.api.JarnessRuntime;
 import ch.predmet.jarness.api.agent.Agent;
 import ch.predmet.jarness.api.agent.AgentRequest;
+import ch.predmet.jarness.api.approval.ApprovalRegistry;
 import ch.predmet.jarness.api.agent.AgentTemplateRegistry;
 import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.capability.CapabilityRequest;
@@ -10,6 +11,7 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.ConfigView;
 import ch.predmet.jarness.api.config.JarnessConfig;
 import ch.predmet.jarness.api.config.JarnessLayout;
+import ch.predmet.jarness.api.exec.ExecutionRegistry;
 import ch.predmet.jarness.api.hook.HookBus;
 import ch.predmet.jarness.api.hook.HookPoint;
 import ch.predmet.jarness.api.instrument.InstrumentRegistry;
@@ -29,8 +31,11 @@ import ch.predmet.jarness.api.session.SessionStore;
 import ch.predmet.jarness.api.supervisor.Supervisor;
 import ch.predmet.jarness.api.tool.ToolRegistry;
 import ch.predmet.jarness.core.agent.AgentTemplateRegistryImpl;
+import ch.predmet.jarness.core.approval.ApprovalRegistryImpl;
 import ch.predmet.jarness.core.agent.SupervisorImpl;
 import ch.predmet.jarness.core.config.ConfigLoader;
+import ch.predmet.jarness.core.exec.ExecutionRegistryImpl;
+import ch.predmet.jarness.core.exec.LocalExecutionProvider;
 import ch.predmet.jarness.core.config.PresetLoader;
 import ch.predmet.jarness.core.hook.HookBusImpl;
 import ch.predmet.jarness.core.job.JobRegistryImpl;
@@ -70,6 +75,8 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     private final AgentTemplateRegistryImpl templateRegistry;
     private final ProviderRegistryImpl providerRegistry;
     private final JobRegistryImpl jobRegistry;
+    private final ExecutionRegistryImpl executionRegistry;
+    private final ApprovalRegistryImpl approvalRegistry;
     private final Map<String, SessionStore> stores;
     private final SessionStore sessionStore;
     private final NamespaceRegistryImpl namespaces;
@@ -87,6 +94,8 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         this.templateRegistry = new AgentTemplateRegistryImpl();
         this.providerRegistry = new ProviderRegistryImpl();
         this.jobRegistry = new JobRegistryImpl();
+        this.executionRegistry = new ExecutionRegistryImpl();
+        this.approvalRegistry = new ApprovalRegistryImpl();
         this.stores = new LinkedHashMap<>();
         this.sessionStore = store(config.sessionStoreUrl());
         this.namespaces = buildNamespaces(sessionStore);
@@ -129,6 +138,16 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     @Override
     public NamespaceRegistry namespaces() {
         return namespaces;
+    }
+
+    @Override
+    public ExecutionRegistry execution() {
+        return executionRegistry;
+    }
+
+    @Override
+    public ApprovalRegistry approvals() {
+        return approvalRegistry;
     }
 
     @Override
@@ -184,6 +203,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
             report.warnings().forEach(w -> log.warn("mods: {}", w));
         }
         running = true;
+        startExecutor();
         warnAboutMissingTemplates();
         hookBus.emit(HookPoint.RUNTIME_START, this);
         log.info("jarness {} started (base {}, preset {}, namespaces {}, mods {})",
@@ -254,9 +274,27 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         }
         stores.clear();
         jobRegistry.shutdown();
+        executionRegistry.shutdown();
         // The mod loader is released last: it owns the mod classloaders.
         modLoader.close();
         log.info("jarness stopped");
+    }
+
+    /** Start the local executor when execution is in relay mode. */
+    private void startExecutor() {
+        String mode = config.raw().string("execution.mode", "relay");
+        if ("local".equalsIgnoreCase(mode)) {
+            log.info("execution mode is local; relay tools will use the in-daemon handlers");
+            return;
+        }
+        try {
+            LocalExecutionProvider provider = LocalExecutionProvider.start(layout.baseDir());
+            executionRegistry.register(provider);
+            log.info("local executor started ({}; {} tool(s))", provider.binaryPath(), provider.tools().size());
+        } catch (Exception e) {
+            log.warn("could not start the local executor: {}. RELAY tools will fail until it is built "
+                    + "(make executor) or execution.mode is set to local", e.getMessage());
+        }
     }
 
     private SessionStore store(String jdbcUrl) {
@@ -274,7 +312,8 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
                 : ModelProfile.of(new ModelRef(config.defaultProvider(), config.defaultModel()));
 
         NamespaceMetadata defaultMetadata = new NamespaceMetadata(
-                "default", Map.of(), defaultModel, Map.of(), PolicySet.empty(), CapabilitySet.grant("ns.default", defaults));
+                "default", Map.of(), defaultModel, Map.of(), defaultPolicies(),
+                CapabilitySet.grant("ns.default", defaults));
         Namespace defaultNamespace = new NamespaceImpl(Namespace.DEFAULT_ID,
                 new NamespaceSpec(Namespace.DEFAULT_ID, defaultMetadata, defaultStore,
                         blankToNull(config.defaultTemplate()), ""), true);
@@ -294,11 +333,27 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
             CapabilitySet caps = parseCapabilities("ns." + id, view.stringList("capabilities"), defaults);
             String template = view.string("template", config.defaultTemplate());
             NamespaceMetadata metadata = new NamespaceMetadata(
-                    view.string("name", id), Map.of(), model, Map.of(), PolicySet.empty(), caps);
+                    view.string("name", id), Map.of(), model, Map.of(), namespacePolicies(view), caps);
             registry.create(new NamespaceSpec(id, metadata, store, blankToNull(template), ""));
             log.info("namespace {} ready (store {}, template {}, caps {})", id, storeUrl, template, caps.kinds());
         }
         return registry;
+    }
+
+    private PolicySet defaultPolicies() {
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("approval", config.raw().string("approval.policy", "allow"));
+        values.put("allow", config.raw().stringList("approval.allow"));
+        return new PolicySet(values);
+    }
+
+    private PolicySet namespacePolicies(ConfigView view) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("approval", view.string("approval",
+                config.raw().string("approval.policy", "allow")));
+        List<String> allow = view.stringList("allow");
+        values.put("allow", allow.isEmpty() ? config.raw().stringList("approval.allow") : allow);
+        return new PolicySet(values);
     }
 
     private List<CapabilityRequest> defaultCapabilities() {

@@ -151,3 +151,21 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 - **checkpoint 只显式触发**：没有每 N turn 自动 checkpoint；阈值调优留给有真实负载之后。
 - **能力恢复**：镜像存的是「上次 commit 的 caps」；resume 时再与 parent/ns 求交，派生边在 supervisor
   里重建，不持久化旧 capId。
+
+## 17. P2 执行层的取舍（2026-11-01）
+
+- **协议先用 JSON-lines**（Q37 的暂定倾向）：帧小、可读、调试成本低；每帧一个 JSON 对象，按 callId
+  多路复用。等它成为瓶颈再换 protobuf/flatbuffers，现在换只会增加调试难度。
+- **HMAC 覆盖「调用意图」而不是整条 TCP 流**：canonical 串 `callId|tool|argsJson|deadline|capsJson`
+  由 daemon 签名，executor 常量时间校验；args/caps 以字符串原样传递，避免 JSON canonicalization
+  两边不一致。token 是一次性 32 字节 secret，经 env 传给子进程，不出现在命令行。
+- **daemon 监听、executor 回连**：本机与远端同一方向；远端部署不需要给 daemon 开入站端口。
+- **Java 工具类保留**：`ReadFileTool` 等仍是 LOCAL 实现与 spec 的来源；relay 模式用 `RelayTool`
+  包装同一 spec/caps，把调用发给 executor。`execution.mode="local"` 是显式回退，不是自动降级。
+- **执行器工具名与模型工具名分离**：`read` → `fs.read`、`bash` → `exec.run`；模型看到的仍是
+  deepseek-harness 风格的名字，Rust 侧用更窄的 internal 名字。
+- **幂等缓存放在 executor**（10 分钟）：重试同一 callId 不重复写文件；daemon 只负责生成 key。
+- **默认审批 ALLOW**：v0.1 的「不阻塞无人值守运行」仍然成立；`ask` 需要宿主注册 handler，没 handler
+  就是 deny；`never` 是显式收紧，不是默认值。
+- **ASK 先同步**：虚拟线程上阻塞等待 handler 最简单；设计允许的异步挂起要等 P3 的 mailbox，否则
+  会得到一套没有事件驱动的挂起状态机。

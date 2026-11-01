@@ -154,3 +154,31 @@
 - **resume 的权限上下文**：resume 作为 root agent 重新挂到 pid 0；原父节点不在时不做 ADOPT（P3/P5 的 restart/orphan 一起做）。
 
 P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree position 除外）；下一阶段是 P2 执行层。
+
+## 8. P2 落地记录（2026-11-01）
+
+目标：Tool 与 Exec 解耦，默认把 fs/exec 工作交给 daemon 外的 Rust executor。
+
+已实现：
+
+| 设计 | 落点 |
+| --- | --- |
+| TOOL-4 实现形态 | `Tool.form()` = LOCAL / RELAY，`relayName()`；`RelayTool` 保留原 spec/caps，把调用交给 `ExecutionRegistry` |
+| TOOL-2 / EXEC-1 | `executor/` Rust crate（`jarness-executor`）：daemon 监听 loopback，executor 主动回连；JSON-lines 帧 `hello / hello_ack / call / cancel / result / ping / shutdown`；按 callId 多路复用 |
+| 认证 | 一次性 32 字节 token（env 传入）+ 每次 call 的 HMAC-SHA256（`callId|tool|argsJson|deadline|capsJson`），executor 常量时间校验；loopback 本地免 TLS（远端 TLS 在 P5） |
+| 执行工具 | `fs.read` / `fs.write` / `fs.edit` / `fs.delete` / `fs.glob` / `fs.grep` / `exec.run`；输出格式对齐原 daemon 工具 |
+| 能力/沙箱强制 | executor 校验 FS_READ/FS_WRITE/EXEC kind、resource scope、`read-only`/`workspace-write`/`full-access`；daemon 侧仍有工具级能力门与 SandboxMode |
+| 超时/取消/幂等 | `ExecRequest.deadline` → provider 超时后发 `cancel` 并返回 timeout；executor 对 `idempotencyKey` 缓存结果（10 分钟）命中直接返回；`exec.run` 自带 timeoutMs 与取消 kill |
+| 审批（TOOL-1） | `ApprovalPolicy` ALLOW / ASK / NEVER + `ApprovalRegistry`；ASK 调 handler（默认无 handler 即 deny）；NEVER 只放行 allow-list；配置 `[approval] policy/allow/timeout_seconds`，namespace 可覆盖 |
+| 构建 | `make executor` 构建 Rust 并 stage 到 `dist/executor/jarness-executor`；`make dist` 同时产出 jar + executor；`jn` 用 `-Djarness.executor` 指绝对路径 |
+| 回退 | `[execution] mode = "local"` 显式使用 daemon 内工具；RELAY 缺 provider 时返回 `execution_failed`，不静默回退 |
+
+测试（新增 9 个）：`ExecutorIntegrationTest`（写/读/exec、能力拒绝、workspace 越界、provider deadline、幂等）、`RelayAgentTurnTest`（脚本模型 → write 工具 → Rust executor → 文件落盘 → turn commit）、`RelayToolTest`（relay 注册/provider alive）、`ApprovalTest`（ask allow/deny、never allow-list）。
+
+未闭环：
+
+- **ASYNC**：`ToolMode.ASYNC` 已在 API/协议里，但异步结果要经 mailbox 开新 turn，属于 P3；当前 relay 一律 SYNC。
+- **net 工具**：`web_search`/`web_fetch` 仍是 LOCAL；executor 的 `net.fetch` 与 NET scope 强制放 P5，和 remote executor 一起做。
+- **流控/进度**：协议有 call/cancel/result，没有 per-stream credit 与 progress 帧；P5 补。
+- **executor 崩溃重启**：provider 标 dead、在飞调用失败；自动重启交给 P5 的 restart policy。
+- **审批异步挂起**：ASK 现在同步调 handler（虚拟线程阻塞）；`ask` 的「挂起 → 决策事件 → 继续」复用 P3 的 mailbox。

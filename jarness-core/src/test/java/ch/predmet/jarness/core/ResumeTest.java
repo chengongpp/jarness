@@ -46,6 +46,9 @@ class ResumeTest {
         Files.writeString(layout.configFile(), """
                 [defaults]
                 template = "void"
+
+                [execution]
+                mode = "local"
                 """);
         JarnessRuntime runtime = Jarness.Builder.at(base).build();
         runtime.start();

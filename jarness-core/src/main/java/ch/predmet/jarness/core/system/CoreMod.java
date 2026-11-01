@@ -11,6 +11,7 @@ import ch.predmet.jarness.core.provider.ProfileLoader;
 import ch.predmet.jarness.core.provider.ProviderFactory;
 import ch.predmet.jarness.core.templates.BuiltinTemplates;
 import ch.predmet.jarness.core.tool.CapabilityTool;
+import ch.predmet.jarness.core.exec.RelayTool;
 import ch.predmet.jarness.core.tool.builtin.AgentSpawnTool;
 import ch.predmet.jarness.core.tool.builtin.BashTool;
 import ch.predmet.jarness.core.tool.builtin.DeleteFileTool;
@@ -46,6 +47,7 @@ public final class CoreMod implements JarnessMod {
 
     @Override
     public void register(ModContext ctx) {
+        boolean relay = !"local".equalsIgnoreCase(ctx.runtimeConfig().string("execution.mode", "relay"));
         ctx.instruments().register("providers", true, 100,
                 "Load provider profiles from config/providers.toml and pick the default model.", ic -> {
                     List<ProviderProfile> profiles = ProfileLoader.load(ic.runtime().layout().providersFile());
@@ -69,17 +71,17 @@ public final class CoreMod implements JarnessMod {
 
         ctx.instruments().register("tools.fs", true, 200,
                 "Filesystem tools: read, write, edit, delete, glob, grep.", ic -> {
-                    ic.tools().register(CapabilityTool.of(new ReadFileTool(), CapKind.FS_READ));
-                    ic.tools().register(CapabilityTool.of(new WriteFileTool(), CapKind.FS_WRITE));
-                    ic.tools().register(CapabilityTool.of(new EditFileTool(), CapKind.FS_WRITE));
-                    ic.tools().register(CapabilityTool.of(new DeleteFileTool(), CapKind.FS_WRITE));
-                    ic.tools().register(CapabilityTool.of(new GlobTool(), CapKind.FS_READ));
-                    ic.tools().register(CapabilityTool.of(new GrepTool(), CapKind.FS_READ));
+                    register(ic.tools(), relay, CapabilityTool.of(new ReadFileTool(), CapKind.FS_READ), "fs.read");
+                    register(ic.tools(), relay, CapabilityTool.of(new WriteFileTool(), CapKind.FS_WRITE), "fs.write");
+                    register(ic.tools(), relay, CapabilityTool.of(new EditFileTool(), CapKind.FS_WRITE), "fs.edit");
+                    register(ic.tools(), relay, CapabilityTool.of(new DeleteFileTool(), CapKind.FS_WRITE), "fs.delete");
+                    register(ic.tools(), relay, CapabilityTool.of(new GlobTool(), CapKind.FS_READ), "fs.glob");
+                    register(ic.tools(), relay, CapabilityTool.of(new GrepTool(), CapKind.FS_READ), "fs.grep");
                 });
 
         ctx.instruments().register("tools.exec", true, 210,
                 "Shell execution and background job control: bash, job_output, job_kill, job_list.", ic -> {
-                    ic.tools().register(CapabilityTool.of(new BashTool(), CapKind.EXEC));
+                    register(ic.tools(), relay, CapabilityTool.of(new BashTool(), CapKind.EXEC), "exec.run");
                     ic.tools().register(CapabilityTool.of(new JobOutputTool(), CapKind.EXEC));
                     ic.tools().register(CapabilityTool.of(new JobKillTool(), CapKind.EXEC));
                     ic.tools().register(CapabilityTool.of(new JobListTool(), CapKind.EXEC));
@@ -135,5 +137,10 @@ public final class CoreMod implements JarnessMod {
         ctx.instruments().register("templates", true, 400,
                 "The four built-in agent templates: void, minimal, standard, full.",
                 ic -> BuiltinTemplates.registerAll(ic.templates()));
+    }
+
+    private static void register(ch.predmet.jarness.api.tool.ToolRegistry tools, boolean relay,
+                                 ch.predmet.jarness.api.tool.Tool tool, String relayName) {
+        tools.register(relay ? RelayTool.of(tool, relayName) : tool);
     }
 }

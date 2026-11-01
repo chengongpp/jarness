@@ -405,6 +405,23 @@ session.commitTurn(turn, imageMetadata);  // 唯一 durability 边界：单事�
 - 工具/mod/template 的依赖清单由 `AgentImpl` 自动写；自定义 agent 需要自己填
   `ImageMetadata.deps()`（template id+version、loop、mods、tools）。
 
+### 6.8 执行器、工具形态与审批
+
+工具默认 `form() == LOCAL`（daemon 内执行）。要交给 Rust executor：
+
+```java
+Tool tool = CapabilityTool.of(new MyTool(), CapKind.FS_WRITE);
+ic.tools().register(RelayTool.of(tool, "fs.write"));   // 模型仍看到 MyTool.spec()
+```
+
+- `relayName()` 是 executor 的 internal 名称；`exec.run` / `fs.*` 由内置 executor 提供。自定义 executor
+  工具需要同时改 `executor/src/main.rs` 的 `dispatch` 与 `TOOLS`，否则 `execution_failed: unknown ...`。
+- `ExecRequest` 带 `workspace/sandbox/caps`；executor 再做一次能力和沙箱校验。不要指望「daemon 已经
+  校验过」而跳过 executor 侧检查。
+- `Tool.mode()` 目前只用 `SYNC`；`ASYNC` 的完成事件在 P3 的 mailbox 里接。
+- 审批：`runtime.approvals().register("tui", (request, timeout) -> ...)`。`[approval] policy = "ask"`
+  时没有 handler 就 deny；`never` 只放行 `allow` 列表里的工具名。审批发生在能力门之后、执行之前。
+
 ---
 
 ## 7. Mod 配置

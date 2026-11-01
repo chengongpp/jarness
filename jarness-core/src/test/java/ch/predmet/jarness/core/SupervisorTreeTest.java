@@ -95,7 +95,11 @@ class SupervisorTreeTest {
 
                 [supervisor]
                 auto_start = true
-                """ + (extraConfig == null ? "" : extraConfig));
+                """ + (extraConfig == null ? "" : extraConfig) + """
+
+                [execution]
+                mode = "local"
+                """);
         JarnessRuntime runtime = Jarness.Builder.at(base).build();
         runtime.start();
         return runtime;

@@ -8,6 +8,9 @@ import ch.predmet.jarness.api.agent.AgentSignal;
 import ch.predmet.jarness.api.agent.AgentState;
 import ch.predmet.jarness.api.agent.AgentTemplate;
 import ch.predmet.jarness.api.agent.TurnResult;
+import ch.predmet.jarness.api.approval.ApprovalDecision;
+import ch.predmet.jarness.api.approval.ApprovalPolicy;
+import ch.predmet.jarness.api.approval.ApprovalRequest;
 import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.hook.HookContext;
@@ -937,6 +940,9 @@ public final class AgentImpl implements Agent {
         } else {
             String denied = capabilityDenial(tool);
             if (denied == null) {
+                denied = approvalDenial(tool, before.invocation());
+            }
+            if (denied == null) {
                 denied = budgetToolDenial();
             }
             if (denied != null) {
@@ -984,6 +990,56 @@ public final class AgentImpl implements Agent {
             }
         }
         return null;
+    }
+
+    /** @return a denial reason from the approval policy, or {@code null} to run the tool. */
+    private String approvalDenial(Tool tool, ToolInvocation invocation) {
+        if (!hasSideEffects(tool)) {
+            return null;
+        }
+        ApprovalPolicy policy = ApprovalPolicy.parse(
+                namespace.metadata().policies().string("approval",
+                        runtime.config().raw().string("approval.policy", "allow")),
+                ApprovalPolicy.ALLOW);
+        switch (policy) {
+            case ALLOW -> {
+                return null;
+            }
+            case NEVER -> {
+                if (allowlisted(tool.name())) {
+                    return null;
+                }
+                return "blocked by approval policy: never (tool " + tool.name() + " is not allow-listed)";
+            }
+            case ASK -> {
+                int seconds = runtime.config().raw().integer("approval.timeout_seconds", 300);
+                ApprovalDecision decision = runtime.approvals().ask(new ApprovalRequest(id, namespace.id(),
+                        tool.name(), invocation.arguments(), tool.spec().description()),
+                        Duration.ofSeconds(Math.max(1, seconds)));
+                return decision == ApprovalDecision.ALLOW ? null
+                        : "approval denied for tool " + tool.name();
+            }
+            default -> {
+                return "unsupported approval policy";
+            }
+        }
+    }
+
+    private boolean hasSideEffects(Tool tool) {
+        Set<CapKind> caps = tool.requiredCaps();
+        return caps.contains(CapKind.FS_WRITE) || caps.contains(CapKind.EXEC) || caps.contains(CapKind.NET);
+    }
+
+    private boolean allowlisted(String toolName) {
+        Object value = namespace.metadata().policies().values().get("allow");
+        if (value instanceof java.util.Collection<?> allowed) {
+            for (Object entry : allowed) {
+                if (toolName.equals(String.valueOf(entry))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** @return a denial reason when the budget forbids another tool call, else {@code null}. */

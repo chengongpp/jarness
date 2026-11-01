@@ -201,6 +201,16 @@ class DynamicLoadTest {
         }
 
         @Override
+        public ch.predmet.jarness.api.exec.ExecutionRegistry execution() {
+            return new ch.predmet.jarness.core.exec.ExecutionRegistryImpl();
+        }
+
+        @Override
+        public ch.predmet.jarness.api.approval.ApprovalRegistry approvals() {
+            return new ch.predmet.jarness.core.approval.ApprovalRegistryImpl();
+        }
+
+        @Override
         public boolean isRunning() {
             return true;
         }

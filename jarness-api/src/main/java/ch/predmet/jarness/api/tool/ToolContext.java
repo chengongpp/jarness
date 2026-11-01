@@ -4,6 +4,7 @@ import ch.predmet.jarness.api.JarnessRuntime;
 import ch.predmet.jarness.api.agent.Agent;
 import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.ConfigView;
+import ch.predmet.jarness.api.exec.ExecutionRegistry;
 import ch.predmet.jarness.api.config.SandboxMode;
 import ch.predmet.jarness.api.job.JobRegistry;
 import ch.predmet.jarness.api.kernel.Budget;
@@ -34,6 +35,11 @@ public interface ToolContext {
 
     /** @return the calling agent's remaining budget. */
     Budget budget();
+
+    /** @return the runtime's execution routing table. */
+    default ExecutionRegistry execution() {
+        return runtime().execution();
+    }
 
     /** @return the sandbox mode this call must respect. */
     SandboxMode sandbox();

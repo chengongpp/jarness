@@ -2,9 +2,11 @@ package ch.predmet.jarness.api;
 
 import ch.predmet.jarness.api.agent.Agent;
 import ch.predmet.jarness.api.agent.AgentRequest;
+import ch.predmet.jarness.api.approval.ApprovalRegistry;
 import ch.predmet.jarness.api.agent.AgentTemplateRegistry;
 import ch.predmet.jarness.api.config.JarnessConfig;
 import ch.predmet.jarness.api.config.JarnessLayout;
+import ch.predmet.jarness.api.exec.ExecutionRegistry;
 import ch.predmet.jarness.api.hook.HookBus;
 import ch.predmet.jarness.api.instrument.InstrumentRegistry;
 import ch.predmet.jarness.api.job.JobRegistry;
@@ -65,6 +67,12 @@ public interface JarnessRuntime extends AutoCloseable {
 
     /** @return the namespace table. */
     NamespaceRegistry namespaces();
+
+    /** @return the execution routing table. */
+    ExecutionRegistry execution();
+
+    /** @return the approval handler table. */
+    ApprovalRegistry approvals();
 
     /** @return whether the runtime is started. */
     boolean isRunning();

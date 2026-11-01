@@ -37,6 +37,21 @@ public interface Tool {
         return Set.of();
     }
 
+    /** @return whether the handler runs in the daemon or is relayed to an executor. */
+    default ToolForm form() {
+        return ToolForm.LOCAL;
+    }
+
+    /** @return the executor tool name; only meaningful for {@link ToolForm#RELAY}. */
+    default String relayName() {
+        return name();
+    }
+
+    /** @return the call mode; only {@link ToolMode#SYNC} is wired into the P2 loop. */
+    default ToolMode mode() {
+        return ToolMode.SYNC;
+    }
+
     /** @return the tool's name, a shorthand for {@code spec().name()}. */
     default String name() {
         return spec().name();

@@ -18,7 +18,7 @@ Jarness 是一个基于 Java 21 LTS 的企业级多 Agent 运行时。
 ## 快速开始
 
 ```bash
-make            # 打包到 dist/（dist/jarness.jar + dist/mods/*.jar）
+make            # 打包到 dist/（jarness.jar + mods/*.jar + executor/jarness-executor）
 ./jn            # 拉起交互式 TUI（tui preset）
 ./jn -c "你好"  # 一次性运行（等价于 jarness run）
 ./jn sessions   # 列镜像（turns/budget/checkpoint/deps）
@@ -37,6 +37,23 @@ base dir 默认是 `$HOME/.local/share/jarness`：`mods/` 放外置 mod jar，`c
 ```bash
 ./jn run --session <session-id> "继续上次的活"       # 依赖匹配时直接 resume
 ./jn run --session <session-id> --force-resume "..." # 依赖缺失时降级加载
+```
+
+## 执行器（Rust executor）
+
+默认 `[execution] mode = "relay"`：`read`/`write`/`edit`/`delete`/`glob`/`grep`/`bash` 不再在 daemon
+JVM 里执行，而是由 `dist/executor/jarness-executor`（Rust）执行。daemon 监听 loopback，executor 回连；
+每次调用带能力视图和 HMAC token。`make` 会构建它，也可单独 `make executor`；找不到时可显式退回
+`[execution] mode = "local"`（RELAY 缺 provider 时不会静默回退）。
+
+```toml
+[execution]
+mode = "relay"          # 或 "local"
+
+[approval]
+policy = "allow"        # allow | ask | never
+allow = ["write"]       # policy=never 时的白名单
+timeout_seconds = 300   # policy=ask 的等待上限
 ```
 
 ## Agent、namespace 与能力
