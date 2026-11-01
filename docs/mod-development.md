@@ -363,7 +363,7 @@ agent 不是"平铺的对象"，而是监督树节点：
 ```java
 Agent a = ctx.payload(AgentEvent.class).agent();
 a.pid();              // supervisor 分配，全局唯一
-a.parentPid();        // 0 = 合成根（supervisor 本身）
+a.parentPid();        // 0 = super agent（平台主体）
 a.depth();            // 根 agent = 1
 a.namespaceId();
 a.capabilities();     // 当前持有的 CapabilitySet（可被 revoke 收窄）

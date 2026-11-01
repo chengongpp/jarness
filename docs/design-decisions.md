@@ -59,7 +59,7 @@ base dir（默认 `$HOME/.local/share/jarness`）只放 `mods/`、`config/`、`p
 再关 provider/session store/jobs，最后才 `modLoader.close()`（它持有 mod 的 classloader）。
 ModLoader 不随 bake 结束而销毁，因为它还要承担动态加载。
 
-**[v1.3 补充]** supervisor 现在是监督树（合成根 pid 0）；上/下班顺序不变，但关停时会按深度逆序
+**[v1.3 补充]** supervisor 现在是监督树（pid 0 的 super agent）；上/下班顺序不变，但关停时会按深度逆序
 停 agent，并先杀子树。
 
 ## 7. Session 存储默认 SQLite，JDBC URL 可配
@@ -123,9 +123,9 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 
 把 v1.3 落成代码时，几处需要当场决定：
 
-- **合成根 pid 0**：v1.3 的根是 super agent（真 agent，持平台能力）。P0 先把 pid 0 做成
-  supervisor 持有的合成根（全能力、无会话、不可执行工具），保证树、父子关系、权限交集先成立；
-  P3 再把它换成可执行平台工具的 super agent。这样 CLI/TUI 的 root spawn 不需要先有一个模型。
+- **super agent pid 0**：P0 先把 pid 0 做成 supervisor 持有的合成根（全能力、无会话、不可执行工具），
+  保证树、父子关系、权限交集先成立；P3 已替换为真 agent（`super` 模板 + 平台工具 + 平台能力），
+  并改为惰性创建，避免每个 CLI 命令都产生一个会话。
 - **模型档位**：从 `AgentTemplate` 删除 `model()`，改由 namespace 的 `ModelProfile` 提供；
   `AgentRequest.model` 与 `manifest.modelProfileId` 可在 spawn 时覆盖（Q38 是否受允许集约束，留到 P4）。
 - **预算只校验不切分**：子预算必须 ≤ 父剩余（token/deadline/spawn depth），但父子各持独立计数器，

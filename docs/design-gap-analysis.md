@@ -90,7 +90,7 @@
 
 ## 5. P0 中的取舍与开放问题
 
-1. **合成根节点 pid 0**：v1.3 的根是 super agent（真 agent）。P0 先用 supervisor 持有的合成根（全平台能力、无会话），保证树与权限模型成立；P3 再把它换成可执行平台工具的 agent。
+1. **合成根节点 pid 0**：v1.3 的根是 super agent（真 agent）。P0 先用 supervisor 持有的合成根（全平台能力、无会话），保证树与权限模型成立；P3 已把它换成可执行平台工具的 super agent（惰性创建）。
 2. **配额不做逐层记账**：P0 校验「子预算 ≤ 父剩余」，但父/子各持独立计数器，不做额度切分与归并统计。文档 §1.2 的「逐层切分」留到 P1 与镜像预算字段一起做，避免两套记账。
 3. **namespace 隔离粒度**：P0 的 ns 可指向不同 store（不同 DB 文件即物理隔离），但默认仍共用一份 SQLite；行级 namespace 列随 P1 的 schema 重写加入。
 4. **Q38（manifest 覆盖模型档位）**：P0 允许 `manifest.modelProfileId` 在 ns 的 profiles 内选择；直接 `AgentRequest.model` 仍可覆盖。是否受允许集/预算约束，P4 与策略层一起定。
