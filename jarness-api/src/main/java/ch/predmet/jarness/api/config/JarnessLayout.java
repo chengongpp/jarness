@@ -43,9 +43,28 @@ public record JarnessLayout(Path baseDir, Path modsDir, Path configDir, Path pre
         return configDir.resolve("providers.toml");
     }
 
-    /** @return the SQLite session store, {@code <base>/sessions.db}. */
-    public Path sessionDb() {
+    /** @return the data directory, {@code <base>/data}. */
+    public Path dataDir() {
+        return baseDir.resolve("data");
+    }
+
+    /** @return the default image store, {@code <base>/data/jarness.db}. */
+    public Path imageDb() {
+        return dataDir().resolve("jarness.db");
+    }
+
+    /** @return the legacy v0.1 session store, {@code <base>/sessions.db}, used for one-time migration. */
+    public Path legacySessionDb() {
         return baseDir.resolve("sessions.db");
+    }
+
+    /**
+     * @return the SQLite image store, {@code <base>/data/jarness.db}
+     * @deprecated use {@link #imageDb()}
+     */
+    @Deprecated
+    public Path sessionDb() {
+        return imageDb();
     }
 
     /** @return the default per-agent workspace root, {@code <base>/workspaces}. */

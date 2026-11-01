@@ -133,4 +133,26 @@ public record Budget(long tokensLeft, Instant deadline, int toolSlots, int maxSp
         sb.append(" depth=").append(maxSpawnDepth < 0 ? "unbounded" : maxSpawnDepth);
         return sb.toString();
     }
+
+    /**
+     * Intersect with another budget, keeping the narrower value on every axis.
+     *
+     * @param other the other budget
+     * @return the narrower budget
+     */
+    public Budget narrower(Budget other) {
+        if (other == null) {
+            return this;
+        }
+        long tokens = unlimitedTokens() ? other.tokensLeft
+                : other.unlimitedTokens() ? tokensLeft : Math.min(tokensLeft, other.tokensLeft);
+        Instant when = deadline == null ? other.deadline
+                : other.deadline == null ? deadline
+                : (deadline.isBefore(other.deadline) ? deadline : other.deadline);
+        int slots = toolSlots < 0 ? other.toolSlots
+                : other.toolSlots < 0 ? toolSlots : Math.min(toolSlots, other.toolSlots);
+        int depth = maxSpawnDepth < 0 ? other.maxSpawnDepth
+                : other.maxSpawnDepth < 0 ? maxSpawnDepth : Math.min(maxSpawnDepth, other.maxSpawnDepth);
+        return new Budget(tokens, when, slots, depth);
+    }
 }

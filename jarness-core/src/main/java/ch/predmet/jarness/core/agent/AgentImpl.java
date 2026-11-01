@@ -35,7 +35,9 @@ import ch.predmet.jarness.api.provider.ProviderException;
 import ch.predmet.jarness.api.provider.StreamSink;
 import ch.predmet.jarness.api.provider.Usage;
 import ch.predmet.jarness.api.session.ContentBlock;
+import ch.predmet.jarness.api.session.ImageMetadata;
 import ch.predmet.jarness.api.session.Message;
+import ch.predmet.jarness.api.session.ResumeDeniedException;
 import ch.predmet.jarness.api.session.Session;
 import ch.predmet.jarness.api.session.SessionInit;
 import ch.predmet.jarness.api.session.Step;
@@ -61,6 +63,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -69,6 +73,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -125,8 +130,10 @@ public final class AgentImpl implements Agent {
     private final AtomicInteger toolCallTotal = new AtomicInteger();
     private final AtomicLong promptTokens = new AtomicLong();
     private final AtomicLong completionTokens = new AtomicLong();
+    private final Set<String> committedTurns = ConcurrentHashMap.newKeySet();
 
     private volatile boolean stopFlag;
+    private volatile boolean suspendFlag;
     private volatile boolean turnCancel;
     private volatile String cancelReason = "";
     private volatile String stopReason = "stopped";
@@ -184,29 +191,150 @@ public final class AgentImpl implements Agent {
         }
         this.workspace = ws;
 
+        Optional<ImageMetadata> prior = resumeImage();
+        ResumeCheck resume = checkResume(prior);
+        if (!resume.problems().isEmpty() && !request.forceResume()) {
+            throw new ResumeDeniedException(request.sessionId(), resume.problems());
+        }
+
+        Map<String, Object> sessionMetadata = new LinkedHashMap<>(request.metadata());
+        sessionMetadata.put("namespace", namespace.id());
+
         if (forkFrom != null) {
             Session parentSession = forkFrom.session();
             this.session = namespace.store().create(new SessionInit(request.sessionId(), id,
-                    parentSession.title(), workspace, template.id(), initialModel(), request.metadata()));
+                    parentSession.title(), workspace, template.id(), initialModel(), sessionMetadata));
             for (Message message : parentSession.messages()) {
                 this.session.append(message.withId(UUID.randomUUID().toString()));
             }
             log.info("forked image from {}: {} message(s) copied", forkFrom.id(), parentSession.messages().size());
         } else {
             this.session = namespace.store().loadOrCreate(new SessionInit(
-                    request.sessionId(), id, null, workspace, template.id(), initialModel(), request.metadata()));
+                    request.sessionId(), id, null, workspace, template.id(), initialModel(), sessionMetadata));
+        }
+
+        if (prior.isPresent() && request.budget() == null) {
+            this.budget.set(this.budget.get().narrower(prior.get().budget()));
         }
 
         this.ctx = new AgentContextImpl(this, runtime);
-        ctx.baseTools(request.toolNames().isEmpty() ? template.toolNames() : request.toolNames());
+        List<String> requestedTools = request.toolNames().isEmpty()
+                ? template.toolNames() : request.toolNames();
+        if (resume.problems().isEmpty()) {
+            ctx.baseTools(requestedTools);
+        } else {
+            List<String> available = new ArrayList<>(requestedTools.size());
+            for (String name : requestedTools) {
+                if (runtime.tools().contains(name)) {
+                    available.add(name);
+                }
+            }
+            ctx.baseTools(available);
+            ctx.systemPromptSection("image-degraded", -90, () -> degradedPrompt(resume));
+            log.warn("resumed image {} with degraded tools: {}", session.id(), resume.missingTools());
+        }
         if (request.systemPrompt() != null && !request.systemPrompt().isBlank()) {
             ctx.systemPromptSection("request-override", -100, request::systemPrompt);
         }
 
-        emit(HookPoint.SESSION_CREATED, new SessionEvent(this, session));
         state.set(AgentState.IDLE);
+        saveImageQuietly();
+        emit(HookPoint.SESSION_CREATED, new SessionEvent(this, session));
         this.worker = Thread.ofVirtual().name("jarness-" + id).unstarted(this::runLoop);
         this.worker.start();
+    }
+
+    /** A resume check: the prior image, what no longer matches, and the resulting plan. */
+    private record ResumeCheck(ImageMetadata image, List<String> problems, List<String> missingTools,
+                               boolean forced) {
+        static ResumeCheck none() {
+            return new ResumeCheck(null, List.of(), List.of(), false);
+        }
+    }
+
+    /** @return the prior image of the session being resumed, if any. */
+    private Optional<ImageMetadata> resumeImage() {
+        String sessionId = request.sessionId();
+        if (sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        return namespace.store().image(sessionId);
+    }
+
+    /**
+     * Compare the image's dependency manifest with the live runtime.
+     *
+     * @param prior the prior image, if any
+     * @return the check result
+     */
+    private ResumeCheck checkResume(Optional<ImageMetadata> prior) {
+        if (prior.isEmpty()) {
+            return ResumeCheck.none();
+        }
+        ImageMetadata image = prior.get();
+        List<String> problems = new ArrayList<>();
+        List<String> missingTools = new ArrayList<>();
+        if (image.schemaVersion() != ImageMetadata.SCHEMA_VERSION) {
+            problems.add("image schema " + image.schemaVersion() + " != " + ImageMetadata.SCHEMA_VERSION);
+        }
+        Map<String, Object> deps = image.deps();
+        Object rawTemplate = deps.get("template");
+        if (rawTemplate instanceof Map<?, ?> map) {
+            String templateId = text(map.get("id"));
+            String version = text(map.get("version"));
+            if (!template.id().equals(templateId)) {
+                problems.add("template changed from \"" + templateId + "\" to \"" + template.id() + "\"");
+            } else if (!version.isBlank() && !version.equals(template.version())) {
+                problems.add("template version changed from " + version + " to " + template.version());
+            }
+        } else {
+            problems.add("image has no template dependency");
+        }
+        Set<String> loadedMods = new LinkedHashSet<>();
+        for (var mod : runtime.modLoader().loaded()) {
+            loadedMods.add(mod.descriptor().id());
+        }
+        if (deps.get("mods") instanceof List<?> mods) {
+            for (Object item : mods) {
+                if (item instanceof Map<?, ?> map) {
+                    String modId = text(map.get("id"));
+                    if (!modId.isBlank() && !loadedMods.contains(modId)) {
+                        problems.add("mod not loaded: " + modId);
+                    }
+                }
+            }
+        }
+        if (deps.get("tools") instanceof List<?> tools) {
+            for (Object item : tools) {
+                String name = text(item);
+                if (!name.isBlank() && !runtime.tools().contains(name)) {
+                    missingTools.add(name);
+                }
+            }
+            if (!missingTools.isEmpty()) {
+                problems.add("tools no longer registered: " + missingTools);
+            }
+        }
+        return new ResumeCheck(image, List.copyOf(problems), List.copyOf(missingTools),
+                request.forceResume() && !problems.isEmpty());
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private static String degradedPrompt(ResumeCheck resume) {
+        StringBuilder sb = new StringBuilder("# Degraded image\n");
+        sb.append("This image was loaded with --force-resume because its dependencies no longer match ")
+                .append("the running runtime. Only the tools listed below are available; tell the user ")
+                .append("when they ask for something that used to exist.\n");
+        if (!resume.missingTools().isEmpty()) {
+            sb.append("\nUnavailable tools: ").append(String.join(", ", resume.missingTools())).append('\n');
+        }
+        if (!resume.problems().isEmpty()) {
+            sb.append("\nDependency mismatches: ").append(String.join("; ", resume.problems())).append('\n');
+        }
+        return sb.toString();
     }
 
     /** @return the model selected by the namespace's profile, or {@code null}. */
@@ -448,6 +576,16 @@ public final class AgentImpl implements Agent {
     }
 
     /**
+     * Checkpoint-facing stop: stop the worker and record the node as suspended rather than stopped.
+     *
+     * @param reason short reason
+     */
+    void markSuspended(String reason) {
+        suspendFlag = true;
+        initiateStop(reason);
+    }
+
+    /**
      * Remove grants revoked by the supervisor. The next tool call re-reads the set, so revocation
      * takes effect without restarting the agent.
      *
@@ -462,6 +600,15 @@ public final class AgentImpl implements Agent {
             return next;
         });
         log.info("revoked {} capability grant(s); {} remain", capIds.size(), capabilities.get().size());
+        saveImageQuietly();
+    }
+
+    /**
+     * Checkpoint this agent's image: snapshot the session and compact the covered turn deltas.
+     */
+    void checkpoint() {
+        namespace.store().checkpoint(session, imageMetadata());
+        log.info("checkpointed image of {} at turn {}", id, session.nextTurnIndex() - 1);
     }
 
     private void initiateStop(String reason) {
@@ -518,7 +665,7 @@ public final class AgentImpl implements Agent {
 
     private void finishShutdown() {
         if (state.get() != AgentState.FAILED) {
-            state.set(AgentState.STOPPED);
+            state.set(suspendFlag ? AgentState.SUSPENDED : AgentState.STOPPED);
             lastError = null;
         }
         busy = false;
@@ -561,9 +708,9 @@ public final class AgentImpl implements Agent {
         long turnStart = System.nanoTime();
         boolean sessionDirty = false;
         try {
-            Message input = appendMessage(sub.message());
-            String inputText = input != null ? input.text() : sub.message().text();
+            String inputText = sub.message().text();
             turn = session.startTurn(inputText);
+            appendMessage(sub.message());
             turnCount.incrementAndGet();
             if (!titleKnown && turn.index() == 0) {
                 session.rename(inputText.length() <= 60 ? inputText : inputText.substring(0, 60));
@@ -577,7 +724,7 @@ public final class AgentImpl implements Agent {
             } catch (RuntimeException e) {
                 lastError = e.getMessage();
                 turn.finish(TurnState.FAILED, "", e.getMessage());
-                saveTurnQuietly(turn);
+                commitTurnQuietly(turn);
                 return;
             }
             if (!model.equals(session.model())) {
@@ -593,20 +740,20 @@ public final class AgentImpl implements Agent {
                 String cancel = pendingCancelReason();
                 if (cancel != null) {
                     turn.finish(TurnState.CANCELLED, lastText, cancel);
-                    saveTurnQuietly(turn);
+                    commitTurnQuietly(turn);
                     break;
                 }
                 String budgetStop = budgetStopReason();
                 if (budgetStop != null) {
                     turn.finish(TurnState.FAILED, lastText, budgetStop);
-                    saveTurnQuietly(turn);
+                    commitTurnQuietly(turn);
                     lastError = budgetStop;
                     break;
                 }
                 if (!awaitIfPaused()) {
                     String reason = pendingCancelReason();
                     turn.finish(TurnState.CANCELLED, lastText, reason == null ? "cancelled" : reason);
-                    saveTurnQuietly(turn);
+                    commitTurnQuietly(turn);
                     break;
                 }
 
@@ -633,7 +780,7 @@ public final class AgentImpl implements Agent {
                             : reqCtx.cancelReason();
                     turn.addStep(new Step(step, stepStart, Instant.now(), "cancelled", 0, 0, 0));
                     turn.finish(TurnState.FAILED, "", reason);
-                    saveTurnQuietly(turn);
+                    commitTurnQuietly(turn);
                     lastError = reason;
                     break;
                 }
@@ -648,7 +795,7 @@ public final class AgentImpl implements Agent {
                     log.warn("provider call failed: {}", e.getMessage());
                     turn.addStep(new Step(step, stepStart, Instant.now(), "error", 0, 0, 0));
                     turn.finish(TurnState.FAILED, "", e.getMessage());
-                    saveTurnQuietly(turn);
+                    commitTurnQuietly(turn);
                     lastError = e.getMessage();
                     break;
                 }
@@ -669,7 +816,7 @@ public final class AgentImpl implements Agent {
                 stepTotal.incrementAndGet();
                 promptTokens.addAndGet(usage.promptTokens());
                 completionTokens.addAndGet(usage.completionTokens());
-                saveTurnQuietly(turn);
+                commitTurnQuietly(turn);
                 lastText = response.text();
                 touch();
 
@@ -680,13 +827,13 @@ public final class AgentImpl implements Agent {
                     continue;
                 }
                 turn.finish(TurnState.COMPLETED, response.text(), null);
-                saveTurnQuietly(turn);
+                commitTurnQuietly(turn);
                 break;
             }
 
             if (turn.state() == TurnState.RUNNING) {
                 turn.finish(TurnState.MAX_STEPS, lastText, "step budget exhausted");
-                saveTurnQuietly(turn);
+                commitTurnQuietly(turn);
             }
         } catch (Throwable t) {
             log.error("turn failed unexpectedly", t);
@@ -694,7 +841,7 @@ public final class AgentImpl implements Agent {
             if (turn != null && turn.state() == TurnState.RUNNING) {
                 try {
                     turn.finish(TurnState.FAILED, "", String.valueOf(t.getMessage()));
-                    saveTurnQuietly(turn);
+                    commitTurnQuietly(turn);
                 } catch (Throwable ignored) {
                     // the session store is failing; the future still completes below
                 }
@@ -709,6 +856,7 @@ public final class AgentImpl implements Agent {
                 state.set(AgentState.IDLE);
             }
             touch();
+            commitTurnQuietly(turn);
             if (sessionDirty) {
                 try {
                     namespace.store().update(session);
@@ -944,11 +1092,49 @@ public final class AgentImpl implements Agent {
         }
     }
 
-    private void saveTurnQuietly(Turn turn) {
+    /**
+     * Commit a terminal turn exactly once. Running turns stay in memory until they commit.
+     *
+     * @param turn the turn
+     */
+    private void commitTurnQuietly(Turn turn) {
+        if (turn == null || turn.state() == TurnState.RUNNING) {
+            return;
+        }
+        if (!committedTurns.add(turn.id())) {
+            return;
+        }
         try {
-            session.saveTurn(turn);
+            session.commitTurn(turn, imageMetadata());
         } catch (Throwable t) {
-            log.warn("could not persist turn {}", turn.id(), t);
+            committedTurns.remove(turn.id());
+            log.warn("could not commit turn {}", turn.id(), t);
+        }
+    }
+
+    /** @return the current image metadata: dependencies, budget, capabilities, state. */
+    private ImageMetadata imageMetadata() {
+        Map<String, Object> deps = new LinkedHashMap<>();
+        deps.put("schema", ImageMetadata.SCHEMA_VERSION);
+        deps.put("template", Map.of("id", template.id(), "version", template.version()));
+        deps.put("loop", manifest.loopRef());
+        deps.put("namespace", namespace.id());
+        List<Map<String, Object>> mods = new ArrayList<>();
+        for (var mod : runtime.modLoader().loaded()) {
+            mods.add(Map.of("id", mod.descriptor().id(), "version", mod.descriptor().version()));
+        }
+        deps.put("mods", mods);
+        deps.put("tools", ctx.visibleToolNames());
+        AgentState snapshot = state.get() == AgentState.RUNNING ? AgentState.IDLE : state.get();
+        return new ImageMetadata(id, session.id(), namespace.id(), ImageMetadata.SCHEMA_VERSION, -1,
+                deps, budget.get(), capabilities.get(), snapshot.name(), Instant.now());
+    }
+
+    private void saveImageQuietly() {
+        try {
+            namespace.store().saveImage(imageMetadata());
+        } catch (Throwable t) {
+            log.warn("could not persist image metadata for {}", id, t);
         }
     }
 

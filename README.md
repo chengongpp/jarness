@@ -21,14 +21,23 @@ Jarness 是一个基于 Java 21 LTS 的企业级多 Agent 运行时。
 make            # 打包到 dist/（dist/jarness.jar + dist/mods/*.jar）
 ./jn            # 拉起交互式 TUI（tui preset）
 ./jn -c "你好"  # 一次性运行（等价于 jarness run）
-./jn mods       # 透传其它 CLI 子命令（mods/presets/templates/providers/namespaces/tui/run）
+./jn sessions   # 列镜像（turns/budget/checkpoint/deps）
+./jn mods       # 透传其它 CLI 子命令（mods/presets/templates/providers/namespaces/sessions/tui/run）
 ```
 
 也可以直接用 jar：`java -jar dist/jarness.jar run "你好"`。
 
 base dir 默认是 `$HOME/.local/share/jarness`：`mods/` 放外置 mod jar，`config/` 放配置
-（`jarness.toml`、`providers.toml`、以及以 mod id 命名的 per-mod 配置目录），`presets/` 放预设。
-每个 agent 的工作目录与 base dir 无关，默认在 `<base>/workspaces/agents/agent-<pid>` 下。
+（`jarness.toml`、`providers.toml`、以及以 mod id 命名的 per-mod 配置目录），`presets/` 放预设，
+`data/jarness.db` 是镜像库（SQLite，turn 事务 + checkpoint）。每个 agent 的工作目录与 base dir 无关，
+默认在 `<base>/workspaces/agents/agent-<pid>` 下。
+
+镜像可以恢复：
+
+```bash
+./jn run --session <session-id> "继续上次的活"       # 依赖匹配时直接 resume
+./jn run --session <session-id> --force-resume "..." # 依赖缺失时降级加载
+```
 
 ## Agent、namespace 与能力
 

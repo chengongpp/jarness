@@ -16,6 +16,7 @@ import ch.predmet.jarness.api.hook.event.SpawnEvent;
 import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.AgentTree;
 import ch.predmet.jarness.api.kernel.Budget;
+import ch.predmet.jarness.api.kernel.ImageRef;
 import ch.predmet.jarness.api.kernel.ExitStatus;
 import ch.predmet.jarness.api.kernel.OrphanPolicy;
 import ch.predmet.jarness.api.kernel.Origin;
@@ -24,6 +25,7 @@ import ch.predmet.jarness.api.kernel.SpawnDeniedException;
 import ch.predmet.jarness.api.namespace.Namespace;
 import ch.predmet.jarness.api.namespace.NamespaceRegistry;
 import ch.predmet.jarness.api.namespace.NamespaceSpec;
+import ch.predmet.jarness.api.session.ImageMetadata;
 import ch.predmet.jarness.api.supervisor.AgentStatus;
 import ch.predmet.jarness.api.supervisor.Supervisor;
 import org.slf4j.Logger;
@@ -281,6 +283,12 @@ public final class SupervisorImpl implements Supervisor {
             }
             CapabilitySet base = parent == null ? rootCaps : parent.capabilities();
             CapabilitySet requested = requestedCaps != null ? requestedCaps : base;
+            if (request != null && request.sessionId() != null && !request.sessionId().isBlank()) {
+                Optional<ImageMetadata> prior = namespace.store().image(request.sessionId());
+                if (prior.isPresent() && !prior.get().capabilities().isEmpty()) {
+                    requested = requested.intersect(prior.get().capabilities());
+                }
+            }
             CapabilitySet effective = requested
                     .intersect(base)
                     .intersect(namespace.metadata().defaults());
@@ -680,6 +688,58 @@ public final class SupervisorImpl implements Supervisor {
         } finally {
             lock.unlock();
         }
+    }
+
+    // ------------------------------------------------------------- images
+
+    @Override
+    public ImageRef checkpoint(long pid) {
+        Agent agent = requireAgent(pid);
+        if (!(agent instanceof AgentImpl impl)) {
+            throw new IllegalStateException("agent " + pid + " does not support checkpointing");
+        }
+        impl.checkpoint();
+        int turn = agent.namespace().store().image(agent.session().id())
+                .map(ImageMetadata::checkpointTurn).orElse(-1);
+        return new ImageRef(agent.session().id(), agent.namespaceId(), turn);
+    }
+
+    @Override
+    public ImageRef suspend(long pid) {
+        ImageRef ref = checkpoint(pid);
+        Agent agent = requireAgent(pid);
+        if (agent instanceof AgentImpl impl) {
+            impl.markSuspended("suspended");
+        } else {
+            agent.stop("suspended");
+        }
+        return ref;
+    }
+
+    @Override
+    public Agent resume(ImageRef image) {
+        Objects.requireNonNull(image, "image");
+        Namespace namespace = namespaces.get(image.namespaceId());
+        ImageMetadata metadata = namespace.store().image(image.sessionId()).orElseThrow(() ->
+                new IllegalArgumentException("no image for session " + image.sessionId()
+                        + " in namespace " + image.namespaceId()));
+        String templateId = namespace.defaultTemplateId();
+        Object template = metadata.deps().get("template");
+        if (template instanceof Map<?, ?> map) {
+            Object id = map.get("id");
+            if (id != null && !String.valueOf(id).isBlank()) {
+                templateId = String.valueOf(id);
+            }
+        }
+        if (templateId == null || templateId.isBlank()) {
+            throw new IllegalStateException("image " + image.sessionId() + " records no template and namespace "
+                    + namespace.id() + " has no default template");
+        }
+        AgentRequest request = AgentRequest.builder(templateId)
+                .sessionId(image.sessionId())
+                .namespace(namespace.id())
+                .build();
+        return spawn(request);
     }
 
     // ------------------------------------------------------------- namespaces

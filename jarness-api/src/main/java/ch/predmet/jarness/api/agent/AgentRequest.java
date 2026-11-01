@@ -32,6 +32,7 @@ import java.util.Map;
  * @param namespaceId   namespace id, or {@code null} to use the parent's namespace / {@code default}
  * @param capabilities  requested capabilities, or {@code null} to inherit from the parent
  * @param budget        requested budget, or {@code null} for the child default
+ * @param forceResume   whether to load an image whose dependencies no longer match, degrading tools
  * @param metadata      extension metadata
  */
 public record AgentRequest(
@@ -47,6 +48,7 @@ public record AgentRequest(
         String namespaceId,
         CapabilitySet capabilities,
         Budget budget,
+        boolean forceResume,
         Map<String, Object> metadata) {
 
     public AgentRequest {
@@ -84,6 +86,7 @@ public record AgentRequest(
         private String namespaceId;
         private CapabilitySet capabilities;
         private Budget budget;
+        private boolean forceResume;
         private final Map<String, Object> metadata = new LinkedHashMap<>();
 
         private Builder(String templateId) {
@@ -170,6 +173,12 @@ public record AgentRequest(
         }
 
         /** @return this builder. */
+        public Builder forceResume(boolean value) {
+            this.forceResume = value;
+            return this;
+        }
+
+        /** @return this builder. */
         public Builder meta(String key, Object value) {
             this.metadata.put(key, value);
             return this;
@@ -178,7 +187,7 @@ public record AgentRequest(
         /** @return the built request. */
         public AgentRequest build() {
             return new AgentRequest(templateId, template, name, workspace, sessionId, systemPrompt, toolNames,
-                    model, parentPid, namespaceId, capabilities, budget, metadata);
+                    model, parentPid, namespaceId, capabilities, budget, forceResume, metadata);
         }
     }
 }

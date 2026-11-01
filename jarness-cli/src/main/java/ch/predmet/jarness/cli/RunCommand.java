@@ -42,6 +42,12 @@ public final class RunCommand implements Callable<Integer> {
     @Option(names = {"-w", "--workspace"}, description = "Agent working directory. Default: a fresh one under the base dir.")
     Path workspace;
 
+    @Option(names = {"--session"}, description = "Resume an existing session/image by id.")
+    String sessionId;
+
+    @Option(names = {"--force-resume"}, description = "Load the image even when its dependencies changed, degrading tools.")
+    boolean forceResume;
+
     @Override
     public Integer call() {
         String text = prompt != null ? prompt : String.join(" ", promptParts);
@@ -53,6 +59,12 @@ public final class RunCommand implements Callable<Integer> {
             runtime.start();
             String templateId = template != null ? template : runtime.config().defaultTemplate();
             AgentRequest.Builder builder = AgentRequest.builder(templateId).name(name).workspace(workspace);
+            if (sessionId != null) {
+                builder.sessionId(sessionId);
+            }
+            if (forceResume) {
+                builder.forceResume(true);
+            }
             Main main = (Main) spec.root().userObject();
             if (main.global().namespace != null) {
                 builder.namespace(main.global().namespace);

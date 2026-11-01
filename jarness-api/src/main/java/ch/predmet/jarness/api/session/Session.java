@@ -70,9 +70,23 @@ public interface Session {
     /**
      * Persist the current state of a turn (state, steps, output).
      *
+     * <p>A running turn is not durable: implementations may keep it in memory until
+     * {@link #commitTurn(Turn, ImageMetadata)} is called for a terminal turn. This method remains
+     * for API compatibility and for stores that persist incremental state.</p>
+     *
      * @param turn the turn to persist
      */
     void saveTurn(Turn turn);
+
+    /**
+     * Commit a terminal turn and its image metadata atomically.
+     *
+     * @param turn  the terminal turn
+     * @param image image metadata to persist, or {@code null}
+     */
+    default void commitTurn(Turn turn, ImageMetadata image) {
+        saveTurn(turn);
+    }
 
     /**
      * Overwrite the title.

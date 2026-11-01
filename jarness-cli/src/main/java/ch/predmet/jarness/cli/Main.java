@@ -22,7 +22,8 @@ import java.nio.file.Path;
                 PresetsCommand.class,
                 TemplatesCommand.class,
                 ProvidersCommand.class,
-                NamespacesCommand.class
+                NamespacesCommand.class,
+                SessionsCommand.class
         })
 public final class Main implements Runnable {
 

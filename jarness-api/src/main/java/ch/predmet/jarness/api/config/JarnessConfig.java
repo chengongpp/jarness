@@ -48,7 +48,7 @@ public record JarnessConfig(
                 "standard",
                 "",
                 "",
-                "jdbc:sqlite:" + layout.sessionDb(),
+                "jdbc:sqlite:" + layout.imageDb(),
                 64,
                 32_000,
                 0.0,

@@ -384,6 +384,27 @@ a.manifest();         // 创建时的清单：template / loop / restart / orphan
 默认 namespace 只给本地能力（`fs.read` / `fs.write` / `exec` / `net` / `model` / `spawn` /
 `extend` / `ipc`），`platform` 保留给 P3 的 super agent。
 
+### 6.7 镜像、turn 事务与恢复
+
+如果你自己驱动 `Session`（而不是用 `AgentImpl`），要遵守同一套持久化契约：
+
+```java
+Turn turn = session.startTurn(input);     // 只在内存里建 turn
+session.append(Message.user(input));      // running turn 期间只缓冲
+session.append(Message.toolResult(...));  // 同上
+turn.finish(TurnState.COMPLETED, text, null);
+session.commitTurn(turn, imageMetadata);  // 唯一 durability 边界：单事务落库
+```
+
+- `session.saveTurn(turn)` 在 running 状态是 no-op；终态才等价于 commit（不带 image metadata）。
+- 崩溃/进程退出时未 commit 的 turn 整体消失；不要指望 `messages()` 里的在飞消息已经落盘。
+- `namespace.store().image(sessionId)` 返回镜像元数据（deps / budget / caps / checkpoint）；
+  `store.checkpoint(session, image)` 写快照并压缩旧 delta。
+- 想从镜像恢复：`Supervisor.resume(ImageRef)`，或者 `AgentRequest.sessionId(...)` 再让
+  `AgentImpl` 做依赖校验；不匹配时用 `forceResume(true)` 降级。
+- 工具/mod/template 的依赖清单由 `AgentImpl` 自动写；自定义 agent 需要自己填
+  `ImageMetadata.deps()`（template id+version、loop、mods、tools）。
+
 ---
 
 ## 7. Mod 配置

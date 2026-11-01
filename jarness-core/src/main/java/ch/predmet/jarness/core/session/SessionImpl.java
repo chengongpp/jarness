@@ -1,11 +1,12 @@
 package ch.predmet.jarness.core.session;
 
 import ch.predmet.jarness.api.provider.ModelRef;
+import ch.predmet.jarness.api.session.ImageMetadata;
 import ch.predmet.jarness.api.session.Message;
 import ch.predmet.jarness.api.session.Session;
 import ch.predmet.jarness.api.session.SessionStore;
-import ch.predmet.jarness.api.session.Step;
 import ch.predmet.jarness.api.session.Turn;
+import ch.predmet.jarness.api.session.TurnState;
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -16,11 +17,12 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Live {@link Session} backed by a {@link SessionStore}.
+ * Live {@link Session} backed by a {@link SessionStore}, with turn-level durability.
  *
- * <p>History (messages and turns) is materialized at construction and kept in memory; every
- * mutation is persisted through the store immediately. The store is the only caller of the
- * constructor.</p>
+ * <p>Messages appended while a turn is running are held in memory and become durable only when the
+ * turn commits, together with the turn's steps and image metadata. A run that crashes mid-turn
+ * leaves the session exactly as it was after the previous commit. Messages appended outside a turn
+ * (for example when copying a fork's image) are written immediately.</p>
  */
 public class SessionImpl implements Session {
 
@@ -33,7 +35,9 @@ public class SessionImpl implements Session {
     private final Map<String, Object> metadata;
     private final List<Message> messages;
     private final List<TurnImpl> turns;
+    private final List<Message> pendingMessages = new ArrayList<>();
 
+    private TurnImpl activeTurn;
     private String title;
     private ModelRef model;
     private Instant updatedAt;
@@ -128,29 +132,52 @@ public class SessionImpl implements Session {
 
     @Override
     public int nextTurnIndex() {
-        return turns.size();
+        return turns.isEmpty() ? 0 : turns.get(turns.size() - 1).index() + 1;
     }
 
     @Override
     public void append(Message message) {
         Objects.requireNonNull(message, "message");
         messages.add(message);
-        store.saveMessage(this, message);
+        if (activeTurn != null && activeTurn.state() == TurnState.RUNNING) {
+            pendingMessages.add(message);
+        } else {
+            store.saveMessage(this, message);
+        }
         touch();
     }
 
     @Override
     public Turn startTurn(String input) {
+        if (activeTurn != null && activeTurn.state() == TurnState.RUNNING) {
+            throw new IllegalStateException("session " + id + " already has a running turn");
+        }
         TurnImpl turn = new TurnImpl(null, id, nextTurnIndex(), input);
         turns.add(turn);
-        store.saveTurn(this, turn);
+        activeTurn = turn;
         touch();
         return turn;
     }
 
     @Override
     public void saveTurn(Turn turn) {
-        store.saveTurn(this, turn);
+        if (turn.state() == TurnState.RUNNING) {
+            // in-flight state stays in memory; only a terminal turn is durable
+            return;
+        }
+        commitTurn(turn, null);
+    }
+
+    @Override
+    public void commitTurn(Turn turn, ImageMetadata image) {
+        if (turn.state() == TurnState.RUNNING) {
+            return;
+        }
+        store.commitTurn(this, turn, pendingMessages, image);
+        pendingMessages.clear();
+        if (activeTurn != null && activeTurn.id().equals(turn.id())) {
+            activeTurn = null;
+        }
         touch();
     }
 

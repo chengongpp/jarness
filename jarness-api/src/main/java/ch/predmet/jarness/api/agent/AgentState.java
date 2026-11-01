@@ -10,6 +10,8 @@ public enum AgentState {
     RUNNING,
     /** Paused by a signal, or waiting on delegated work. */
     WAITING,
+    /** Checkpointed and detached from the process; the image can be resumed later. */
+    SUSPENDED,
     /** Stopped normally; the agent will not accept more work. */
     STOPPED,
     /** Stopped because a turn failed unrecoverably. */

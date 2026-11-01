@@ -38,7 +38,7 @@ import ch.predmet.jarness.core.mod.ModLoaderImpl;
 import ch.predmet.jarness.core.namespace.NamespaceImpl;
 import ch.predmet.jarness.core.namespace.NamespaceRegistryImpl;
 import ch.predmet.jarness.core.provider.ProviderRegistryImpl;
-import ch.predmet.jarness.core.session.SqliteSessionStore;
+import ch.predmet.jarness.core.session.LocalSessionStore;
 import ch.predmet.jarness.core.tool.ToolContextImpl;
 import ch.predmet.jarness.core.tool.ToolRegistryImpl;
 import org.slf4j.Logger;
@@ -220,6 +220,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
                 request.namespaceId() != null ? request.namespaceId() : parent.namespaceId(),
                 request.capabilities(),
                 request.budget(),
+                request.forceResume(),
                 request.metadata());
         return supervisor.spawn(child);
     }
@@ -260,7 +261,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
 
     private SessionStore store(String jdbcUrl) {
         return stores.computeIfAbsent(jdbcUrl, url -> {
-            SqliteSessionStore store = new SqliteSessionStore(url);
+            LocalSessionStore store = new LocalSessionStore(url);
             log.info("namespace store open at {}", url);
             return store;
         });

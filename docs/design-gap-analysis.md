@@ -123,3 +123,34 @@
 - 镜像事务、`data/jarness.db`、checkpoint/resume：P1。
 - ExecutionProvider / Rust executor / 资源级能力强制：P2。
 - mailbox / IPC / 审批 / super agent 平台工具：P3。
+
+## 7. P1 落地记录（2026-11-01）
+
+目标：把「镜像 = 唯一权威、turn = 事务」落成可恢复的存储层。
+
+已实现：
+
+| 设计 | 落点 |
+| --- | --- |
+| LOCAL-1 路径 | `<base>/data/jarness.db`；`JarnessLayout.imageDb()` / `legacySessionDb()`；默认 `session.store` 指向新路径（旧的 `sessions.db` 原样保留，未自动迁移） |
+| IMAGE-1 / IMAGE-2 | `SessionImpl` 在 turn 运行期间只把 message 缓冲在内存；`Session.commitTurn(turn, image)` 通过 `LocalSessionStore` 在**一个 SQLite 事务**里写入 turn delta + messages + events + `agent_image`；未提交 turn 崩溃即消失 |
+| turn 状态 | `turns.status` 只有 `committed`；running 不落盘，回放只读 committed |
+| checkpoint | `LocalSessionStore.checkpoint` 把完整 messages/turns 快照写入 `checkpoints`，更新 `agent_image.checkpoint_turn`，删除被覆盖的 messages/turns；`load` 走「最新 checkpoint + 重放 seq > checkpoint 的 committed delta」 |
+| 事件 | `events` 表与 turn 同事务写入（`turn.committed` / `message.appended`），`SessionStore.events` 可按 turn 读取 |
+| 依赖清单 | `agent_image.deps` 记录 schema / template+version / loop / namespace / mods / tools；`AgentImpl` 在 spawn 时写、每次 commit 更新 |
+| resume 校验 | `AgentImpl` 比较 deps；不匹配抛 `ResumeDeniedException`；`AgentRequest.forceResume` 时只保留可用工具并注入 `# Degraded image` 系统提示词 |
+| 预算/能力恢复 | `agent_image.budget` / `caps` 持久化；resume 时预算取「父预算 ∩ 镜像预算」，能力在 supervisor 里再与镜像 caps 求交 |
+| checkpoint / suspend API | `Supervisor.checkpoint(pid) -> ImageRef`、`Supervisor.suspend(pid)`（checkpoint + `SUSPENDED`）、`Supervisor.resume(ImageRef)` |
+| CLI | `jarness sessions [--image]`、`jarness run --session <id> [--force-resume]` |
+
+测试（新增 10 个）：`LocalSessionStoreTest` 覆盖「运行中不可见 / 未提交崩溃即丢 / checkpoint 压缩+重放 / image 往返 / 事件 / 连续 turn 编号」；`ResumeTest` 覆盖「依赖不匹配拒绝 / 强制降级 + 预算/能力恢复 / resume+checkpoint+suspend」。
+
+明确的取舍与未闭环：
+
+- **schema 形状**：LOCAL-1 把 messages 放在 `TURN.delta`；本实现同时保留 `messages` 物化表（按 turn_seq 归属），便于列表/调试；`turns.delta` 里仍带一份完整 turn。checkpoint 后两份都会被压缩。语义（turn 原子、commit 才 durable）一致，形状不同。
+- **旧库迁移**：`sessions.db` 不自动迁移到 `data/jarness.db`（旧 schema 与 v1.3 不兼容）；需要迁移时应写一次性迁移工具，而不是在启动路径里猜。
+- **checkpoint 触发**：只支持显式 `Supervisor.checkpoint` / `suspend`，没有「每 N 个 turn 自动 checkpoint」；设计也允许阈值后调。
+- **镜像里的树/异步**：`parentPid`、pending async calls、capability 派生边还没有进镜像；tree position 和 pending 对账分别在 P3 的 mailbox/异步层补齐。
+- **resume 的权限上下文**：resume 作为 root agent 重新挂到 pid 0；原父节点不在时不做 ADOPT（P3/P5 的 restart/orphan 一起做）。
+
+P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree position 除外）；下一阶段是 P2 执行层。

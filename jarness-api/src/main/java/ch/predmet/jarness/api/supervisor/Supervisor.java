@@ -7,6 +7,7 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.AgentTree;
 import ch.predmet.jarness.api.kernel.Budget;
+import ch.predmet.jarness.api.kernel.ImageRef;
 import ch.predmet.jarness.api.kernel.ExitStatus;
 import ch.predmet.jarness.api.kernel.ResourceStats;
 import ch.predmet.jarness.api.namespace.Namespace;
@@ -189,6 +190,34 @@ public interface Supervisor extends AutoCloseable {
      * @return whether the grant was known
      */
     boolean revokeCap(String capId);
+
+    /**
+     * Checkpoint an agent's image and compact the turn deltas it covers.
+     *
+     * @param pid process id
+     * @return a reference to the checkpointed image
+     */
+    ImageRef checkpoint(long pid);
+
+    /**
+     * Checkpoint an agent, then stop it and mark the node suspended.
+     *
+     * @param pid process id
+     * @return a reference to the checkpointed image
+     */
+    ImageRef suspend(long pid);
+
+    /**
+     * Resume an image as a root agent in its namespace.
+     *
+     * <p>Dependencies are verified first; when they no longer match, the spawn is refused with
+     * {@link ch.predmet.jarness.api.session.ResumeDeniedException} unless the image is loaded
+     * through a request carrying {@code forceResume}.</p>
+     *
+     * @param image the image reference
+     * @return the resumed agent
+     */
+    Agent resume(ImageRef image);
 
     /**
      * Create a namespace.

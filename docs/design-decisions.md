@@ -45,7 +45,7 @@ P0 仍不实现审批，但已经把 `PolicySet` 放进 namespace metadata 作�
 
 ## 5. base dir 与 agent workspace 严格分离
 
-base dir（默认 `$HOME/.local/share/jarness`）只放 `mods/`、`config/`、`presets/`、`sessions.db`、
+base dir（默认 `$HOME/.local/share/jarness`）只放 `mods/`、`config/`、`presets/`、`data/jarness.db`、
 `workspaces/`。每个 agent 的 workspace 默认是 `<base>/workspaces/agents/agent-<pid>` 下的新目录，
 也可以由创建方显式指定，但永远不等于 base dir。工具的相对路径一律相对 agent workspace 解析。
 
@@ -64,13 +64,13 @@ ModLoader 不随 bake 结束而销毁，因为它还要承担动态加载。
 
 ## 7. Session 存储默认 SQLite，JDBC URL 可配
 
-`config/jarness.toml` 的 `session.store` 是完整 JDBC 串，默认 `jdbc:sqlite:<base>/sessions.db`。
+`config/jarness.toml` 的 `session.store` 是完整 JDBC 串，默认 `jdbc:sqlite:<base>/data/jarness.db`。
 想换后端（如 Postgres）只需改配置或让 mod 注册其它 SessionStore。
 消息体以 ContentBlock 列表的 JSON 形式落库，reasoning / tool_call / tool_result 在会话恢复后不丢失。
 
 **[v1.3 补充]** store 现在挂在 namespace 上：`[namespaces.<id>] store = "jdbc:sqlite:..."` 可为某个
-namespace 指定独立库（未指定则共用默认库）。行级 namespace 列与 `data/jarness.db` 路径属于 P1 的
-镜像 schema 重写，尚未落地。
+namespace 指定独立库（未指定则共用默认库）。P1 已把默认库迁到 `data/jarness.db`，实现 turn 事务、
+`agent_image`、`checkpoints` 与 `events`；旧 `<base>/sessions.db` 不自动迁移（schema 不兼容）。
 
 ## 8. 动态加载只进不出
 
@@ -137,3 +137,17 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
   但共用库时还没有行级 namespace 列；随 P1 的 schema 重写加入。
 - **`AgentRequest` 保留**：它是 CLI/工具用的便捷创建输入，内部立即转成 `AgentManifest`；
   新代码应优先直接调 `Supervisor.spawn(parentPid, nsId, manifest, caps, budget)`。
+
+
+## 16. P1 镜像层的取舍（2026-11-01）
+
+- **turn 事务用「缓冲 + 单事务 commit」实现**：`SessionImpl` 在 running turn 期间不写库，`commitTurn`
+  一次性写 turn delta、messages、events、agent_image。这比 WAL/delta 的教科书实现少一层，但语义
+  （未提交 turn 崩溃即回滚、commit 才 durable）是等价的；后续需要边写边读时再加 WAL。
+- **同时保留 messages 物化表和 turn delta**：design 的 LOCAL-1 只有 `TURN.delta`；物化表让列表/调试
+  便宜，checkpoint 时一并压缩。两者在同一事务里写，不会出现半份历史。
+- **resume 从 root 重新挂**：原父节点可能已不在，ADOPT/DETACH 未实现；resume 的树位置在 P3/P5 的
+  mailbox/restart 一起补。
+- **checkpoint 只显式触发**：没有每 N turn 自动 checkpoint；阈值调优留给有真实负载之后。
+- **能力恢复**：镜像存的是「上次 commit 的 caps」；resume 时再与 parent/ns 求交，派生边在 supervisor
+  里重建，不持久化旧 capId。
