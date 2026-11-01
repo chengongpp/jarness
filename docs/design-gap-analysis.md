@@ -239,7 +239,7 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 | 生命周期 | `AgentState` 增补 `SUSPENDED` / `DEACTIVATING` / `RESTARTING`；`Supervisor.suspend` = checkpoint + SUSPENDED |
 | 冷观测 | 明确 v1 不做（设计如此） |
 
-测试：`ObservationTest`、`RestartTest`。
+测试：`ObservationTest`、`RestartTest`、`RemoteExecutorTest`、`RemoteTlsExecutorTest`、`NetFetchExecutorTest`；全仓 87 个测试。
 
 **明确未实现（开放问题，不是遗漏）**：
 
