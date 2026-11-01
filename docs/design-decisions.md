@@ -212,8 +212,7 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 
 ## 21. 远端 executor 的取舍（2026-11-01）
 
-- **daemon 是 listener，executor 回连**：本地/远端共用方向；远端部署不需要给 daemon 开入站到 executor
-  的端口。`RemoteExecutorServer` 接受连接、校验 enrollment token，再把连接包装成 REMOTE provider。
+- **daemon 是 listener，executor 回连**：本地/远端共用方向；远端部署不需要在 daemon 上额外开放 executor 的入站端口。`RemoteExecutorServer` 接受连接、校验 enrollment token，再把连接包装成 REMOTE provider。
 - **enrollment token 放在 env**：与本地 executor 一致，不出现在进程命令行；每个 call 仍有 HMAC。
 - **TLS 暂不做**：Q36 未定（远端是否强制 TLS、secret 轮换策略）。先提供 `remote_tls` 开关，但开启时
   只记录警告并退回明文回环，避免给出「看起来安全、实际没有」的假象。Q36 定案后把 `SSLServerSocket`
