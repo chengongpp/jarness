@@ -1,0 +1,125 @@
+# 现有实现 ↔ `harness-design.md` v1.3 差异审计
+
+> 2026-11-01 · 审计对象：`docs/harness-design.md`（v1.3）与当前 `main`（7 个提交，v0.1 运行时）
+> 结论：**存在系统性冲突**，不是补几个接口能对齐的。现有实现对应的是旧 draft 的「平面 supervisor + 全局 store + JVM 内工具」；v1.3 要求「监督树 + namespace + capability + 镜像事务 + daemon 外 executor」。
+>
+> 处理原则：以设计文档为准；0.1.x 允许破坏 API；可复用的层（provider、mod loader、tool、TUI/CLI）保留并逐步改造。
+
+## 0. 总账
+
+| 类别 | 数量 | 说明 |
+| --- | --- | --- |
+| 直接冲突（C） | 15 | 现状与文档的语义/结构相反，继续叠加会越走越远 |
+| 缺口（G） | 12 | 文档要求、代码里完全没有；不与现状矛盾 |
+| 可复用资产 | 8 | 不需要重写，只需挂到新结构上 |
+
+冲突集中在四层：内核（树/预算/清单）、环境（namespace/capability/模板）、状态（镜像/事务）、执行（executor/IPC）。扩展层（ModLoader）方向一致但 API 形状有差距。
+
+## 1. 直接冲突
+
+| # | 主题 | 现状 | 目标 | 证据 | 处理 |
+| --- | --- | --- | --- | --- | --- |
+| C1 | supervisor 是平面注册表，不是监督树 | 所有 agent 平铺在 `Map<String, Agent>` 中；无 parent、depth、children、子树 kill、配额 | TREE-1/TREE-2：spawn/fork 必带 parent，层级配额，父死 kill 子树 | `SupervisorImpl`、`Supervisor` | P0 重写为树，保留 String 便捷方法 |
+| C2 | 模型选择属于 AgentTemplate | `AgentTemplate.model()`、`SimpleAgentTemplate.model`，循环里模板优先 | I7/TEMPLATE-1：模板不含模型；ModelProfile 属 namespace，spawn 时 manifest 可覆盖 | `AgentTemplate`、`AgentImpl.resolveModel` | P0 删除模板 model，落到 namespace metadata |
+| C3 | 没有 namespace | 单份 `SessionStore`、单份模板表、单份 provider 表；agent 无 ns 绑定 | NS-1/NS-2：每 ns 有 Metadata + store + defaultAgentTemplate；跨 ns 需能力 | `JarnessRuntimeImpl`、`AgentImpl` | P0 引入 NamespaceRegistry + per-ns store 引用 |
+| C4 | capability 缺失，只有全局 SandboxMode | `SandboxMode` 是唯一「能碰什么」的表达；无多资源、无衰减、无撤销 | CAP-1/CAP-2/I3：kind/resource/constraints、`requested ∩ parent ∩ ns`、派生 DAG | `SandboxMode`、`ToolContext.resolve` | P0 引入 CapabilitySet；SandboxMode 降级为 LOCAL 工具的兜底 |
+| C5 | 无 AgentManifest / Budget / 生命周期策略 | `AgentRequest` 把清单、创建参数、模型混在一起；无 restart/orphan/origin/loopRef、无预算 | PROC-1/TREE-1/FORK-1/LIFE-1 | `AgentRequest` | P0 增加 AgentManifest、Budget、Origin、Restart/Orphan |
+| C6 | 持久化不是 turn 事务 | 每条 message 立刻落库；每个 step 结束 `saveTurn`；turn 中途崩溃留下半截状态 | I4/IMAGE-1/IMAGE-2：turn 是事务，commit 才 durable；WAL + checkpoint | `AgentImpl.appendMessage/saveTurnQuietly`、`SqliteSessionStore` schema | P1 重写 store（delta/WAL/commit/checkpoint） |
+| C7 | 工具在 daemon JVM 内执行 | `ReadFileTool`/`BashTool` 等直接读写本机、起子进程 | TOOL-2/EXEC-1：默认 Rust executor 子进程，长连接回连；Tool 与 Exec 解耦 | `core/tool/builtin/*` | P2 引入 ExecutionProvider + RELAY，LOCAL 只留纯计算工具 |
+| C8 | 无 SYNC/ASYNC、无 mailbox、无 IPC | agent 一个 `LinkedBlockingQueue<Submitted>`；工具全部同步等待 | TOOL-3/CONC-1/IPC-1..3：mailbox 有界、异步结果开新 turn、黑板/通道 | `AgentImpl.queue` | P3 引入 mailbox + 控制/数据分离 + IPC 原语 |
+| C9 | 无审批策略，capability 无强制点 | 明确「不做审批提示」，只靠沙箱模式；工具不做能力校验 | TOOL-1/CAP-2：能力校验 → 副作用分级 → approval policy | `docs/design-decisions.md` D7、`ToolContext` | P0 先做工具级能力门；审批与执行侧强制 P2 |
+| C10 | 扩展点与 Registry 形状不一致 | `InstrumentRegistry` + `HookBus`；ModDescriptor 无 apiVersion；`ModLoader.loadAll` 而非 `loadBoot/loadDynamic` | MOD-1：tools/loopHooks/policies/templates/executionProviders/sessionStores/namespaceTemplates + 只读快照 | `api/mod/*`、`api/instrument/*` | P4 收敛为 Registry；P0 不改 mod 加载 |
+| C11 | 没有 super agent | 命令行/工具直接 `runtime.spawn(...)`，没有 pid 0 平台主体 | SUPER-1：唯一持平台能力的 agent；跨 ns、平台工具、管 ns | `SupervisorImpl` | P0 用合成根节点 pid 0 占位；P3 落成真 agent |
+| C12 | 循环没有重试/压缩/超时契约 | provider 失败即 FAILED；无退避重试、无 context 压缩、工具无 deadline/cancel/idempotency | LOOP-1/TURN-1/TOOL-3 | `AgentImpl.runTurn` | P4 循环策略 + 重试；P3 异步超时 |
+| C13 | 无 checkpoint/resume/suspend | 有 session 载入，但没有「镜像」概念、没有依赖清单校验、没有强制加载降级提示 | IMAGE-1 §3.2、LIFE-1 | `AgentImpl`、`SessionStore` | P1 |
+| C14 | 生命周期/进程视图不完整 | `AgentState` 只有 NEW/IDLE/RUNNING/WAITING/STOPPED/FAILED；无 exit status、tree、stats、await | PROC-1/LIFE-1 | `api/agent/AgentState` | P0 加 pid/parent/tree/stats/await；状态枚举 P1 再扩 |
+| C15 | 路径与布局不一致 | 会话库 `<base>/sessions.db`；无 `data/` | LOCAL-1：`<jarness_home>/data/jarness.db` | `JarnessLayout.sessionDb` | P1 迁移（保留旧库只读兼容） |
+
+## 2. 缺口（不矛盾，但文档要求而代码没有）
+
+| # | 缺口 | 目标 | 计划 |
+| --- | --- | --- | --- |
+| G1 | ExecutionProvider 接口与 Local/Remote 实现 | TOOL-2/EXEC-1 | P2 |
+| G2 | Rust executor 二进制、握手、帧协议、认证 | EXEC-1 | P2 |
+| G3 | Blackboard / Channel / handle-as-capability | IPC-1..3 | P3 |
+| G4 | mailbox 有界、背压、异步完成事件 | CONC-1/TOOL-3 | P3 |
+| G5 | super agent 的平台工具（ns 管理、daemon 状态） | SUPER-1 | P3 |
+| G6 | loopHooks / policies / contextAssembler 扩展点 | MOD-1 | P4 |
+| G7 | Registry 快照版本（动态加载后下一 turn 读新快照） | MOD-3 | P4 |
+| G8 | checkpoint / suspend / resume / restart policy | LIFE-1/IMAGE-1 | P1 |
+| G9 | 依赖清单校验 + `--force` 降级提示词 | IMAGE-1 §3.2 | P1 |
+| G10 | 观测面：CDC、只读连接、审计 | LOCAL-1/EVT-1 | P5 |
+| G11 | remote executor、TLS/enrollment、防 C2 | EXEC-1 Q36/Q37 | P5 |
+| G12 | 跨 daemon IPC、COW、ADOPT/DETACH、速率限制 | 文档明确「暂不做」 | 不做（记录） |
+
+## 3. 可复用资产
+
+1. **provider 适配层**：`OpenAiCompatProvider`/`AnthropicProvider`/`OpenAiResponsesProvider` 与 `ProviderProfile`，v1.3 没有推翻（只是模型选择改由 ModelProfile 指向）。
+2. **mod 加载与解析**：`ModLoaderImpl`/`ModResolver`/`jnmods.toml`/`Version`，与 MOD-2/MOD-3 的「仅加载、不卸载、拓扑序」一致。
+3. **instrument/preset**：作为「mod 内可开关的装配单元」保留；P4 再映射到 Registry 扩展点。
+4. **tool 实现体**：可作为 LOCAL 工具或 RELAY 的 daemon 侧 fallback 复用。
+5. **hook bus + 事件 payload**：与 EVT-1 的「事件流」方向一致，后续接 WAL。
+6. **session/message/content block 编解码**：P1 重写 schema 时可复用 `MessageCodec`。
+7. **CLI/TUI**：只依赖 `JarnessRuntime`/`Agent`，P0 加 ns/pid 展示即可。
+8. **测试基建**：`TestEndpoints` 实时端点、mod 动态加载测试、CLI 冒烟测试。
+
+## 4. 迭代计划
+
+### P0（本轮）：内核 + 环境
+
+范围：pid/监督树、AgentManifest、Budget、CapabilitySet、NamespaceRegistry、per-ns store/template/model、工具能力门、子 agent 衰减。
+
+验收：
+
+- [x] `Supervisor.spawn(parentPid, nsId, manifest, caps, budget)` / `fork(...)` 可用；深度、子数、预算、越权、跨 ns 五类拒绝都有明确原因与事件。
+- [x] 父死 → 子树 kill；`tree(pid)` / `stats(pid)` / `await(pid)` 可观测。
+- [x] namespace 可从配置创建；agent 绑定唯一 ns；ns 可指定独立 store、default template、model profile。
+- [x] `requested ∩ parent ∩ ns.defaults` 生效；工具声明 requiredCaps，缺能力时返回 `capability_denied`。
+- [x] 现有 provider/mod/tool/TUI 冒烟不回归（实时端点测试因上游 503 未复跑，见 §6）。
+- [x] `docs/design-decisions.md` 标注被 v1.3 取代的条目。
+
+不在 P0：镜像事务（P1）、executor（P2）、IPC/异步/审批（P3）、Registry 收敛（P4）。
+
+### 后续
+
+- **P1 状态层**：`data/jarness.db`、`agent_image/turn/event/checkpoint`、turn 原子 commit、checkpoint/resume、依赖校验与降级提示。
+- **P2 执行层**：ExecutionProvider、LocalExecutionProvider（桥）、JSON-lines 本地 executor 子进程、LOCAL/RELAY、SYNC/ASYNC、timeout/cancel/idempotency、审批策略、能力 scope 执行侧强制。
+- **P3 协作层**：mailbox、黑板/通道、异步结果 turn、super agent 与平台工具。
+- **P4 扩展/循环**：Registry 扩展点与快照、loopHooks/policies、重试/压缩、mod disable 语义。
+- **P5 观测/远端**：CDC、只读快照、审计、remote executor、TLS/enrollment。
+
+## 5. P0 中的取舍与开放问题
+
+1. **合成根节点 pid 0**：v1.3 的根是 super agent（真 agent）。P0 先用 supervisor 持有的合成根（全平台能力、无会话），保证树与权限模型成立；P3 再把它换成可执行平台工具的 agent。
+2. **配额不做逐层记账**：P0 校验「子预算 ≤ 父剩余」，但父/子各持独立计数器，不做额度切分与归并统计。文档 §1.2 的「逐层切分」留到 P1 与镜像预算字段一起做，避免两套记账。
+3. **namespace 隔离粒度**：P0 的 ns 可指向不同 store（不同 DB 文件即物理隔离），但默认仍共用一份 SQLite；行级 namespace 列随 P1 的 schema 重写加入。
+4. **Q38（manifest 覆盖模型档位）**：P0 允许 `manifest.modelProfileId` 在 ns 的 profiles 内选择；直接 `AgentRequest.model` 仍可覆盖。是否受允许集/预算约束，P4 与策略层一起定。
+5. **审批策略**：P0 不做，保留 `PolicySet` 占位；`ask` 的异步挂起依赖 P3 的 mailbox，提前实现会得到一套用不上的状态机。
+6. **`AgentRequest` 与 `AgentManifest` 并存**：前者是给 CLI/工具用的便捷创建输入，内部立即转成 manifest；新代码应直接用 manifest。
+
+## 6. P0 落地记录（2026-11-01）
+
+已实现（提交 `feat(kernel): supervision tree, namespaces, capabilities, budgets` 之后的代码）：
+
+| 设计 | 落点 |
+| --- | --- |
+| PROC-1 / TREE-1 / TREE-2 | `Supervisor.spawn(parentPid, nsId, manifest, caps, budget)` / `fork` / `signal(pid, signal, subtree)` / `tree` / `stats` / `await`；`SupervisorImpl` 维护 pid → parent/children，深度与子数限制来自 `[supervisor] max_depth/max_children` |
+| I3 能力衰减 | `CapabilitySet.intersect`（resource 取更窄、limits 取更窄）+ `SupervisorImpl.assignCapIds` 记录派生边；`Supervisor.revokeCap` 级联到持有者 |
+| I6 spawn / fork | `spawn` = 新镜像；`fork` = 复制父会话消息（turns 的镜像复制随 P1 的 image 一起做） |
+| NS-1 / NS-2 | `NamespaceRegistry` + `NamespaceSpec`；`config [namespaces.<id>]` 支持 `template` / `model` / `store` / `capabilities`；默认 ns 由 `[defaults]` 构造 |
+| I7 模型解耦 | 删掉 `AgentTemplate.model()`；`ModelProfile` 在 ns metadata，`manifest.modelProfileId` / `AgentRequest.model` 可覆盖 |
+| CAP-1 / CAP-2（core 侧） | `CapKind` / `Capability` / `CapabilitySet` / `Constraints` / `CapabilityDerivation`；工具用 `Tool.requiredCaps()` 或 `CapabilityTool` 包装，缺能力时 `capability_denied` |
+| TREE-2 拒绝事件 | `SpawnDeniedException`（PARENT/NAMESPACE/DEPTH/CHILDREN/BUDGET/CAPABILITY/TEMPLATE/MODEL）+ `HookPoint.SPAWN_DENIED` / `SpawnEvent` |
+| CONC-1 背压（最小版） | 每个 agent 一个有界 submission queue；预算在 turn 内按 step 扣 token、按调用扣 tool slot |
+| 可观测 | `AgentStatus` 增加 pid/parent/ns/depth/toolCalls；`jarness namespaces` 命令 |
+
+测试：`CapabilitySetTest`（6）、`BudgetTest`（5）、`SupervisorTreeTest`（10，覆盖树/衰减/深度/宽度/跨 ns/父死/预算/撤销/fork/独立 store）；其余 26 个既有单元测试通过。
+
+未闭环（按计划留到后续）：
+
+- 实时端点联调本轮未复跑：GB10 端点对 `DeepSeek-V4-Flash` 返回 HTTP 503
+  `model_not_found / No available channel`，CLI 的 spawn/TUI 路径本身已验证（`./jn` TUI 启动、
+  `jarness namespaces`、`jarness run` 的失败路径）。端点恢复后应重跑 `make it`。
+- 镜像事务、`data/jarness.db`、checkpoint/resume：P1。
+- ExecutionProvider / Rust executor / 资源级能力强制：P2。
+- mailbox / IPC / 审批 / super agent 平台工具：P3。
