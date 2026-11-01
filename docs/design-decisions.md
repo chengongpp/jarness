@@ -1,6 +1,11 @@
 # Jarness 设计决策记录
 
-本文档简要记录在实现 `draft/draft_202610141032.md` 时，对草案中未明确（unclear/ambiguous）之处所做的设计与选择，以及理由。
+本文档记录实现 `draft/draft_202610141032.md`（v0.1）时，对草案中未明确（unclear/ambiguous）之处所做的设计与选择，以及理由。
+
+> **2026-11-01 更新**：`docs/harness-design.md`（v1.3）已成为目标设计。v0.1 的部分决策被它取代；
+> 差异、逐条冲突与迁移计划见 [`docs/design-gap-analysis.md`](design-gap-analysis.md)。下文保留原始记录，
+> 被取代处会就地标注 **[v1.3 取代]**。
+
 
 ## 0. 关于"极早期版本"
 
@@ -28,6 +33,10 @@ Jarness 首先是 server runtime / 可嵌入库，不能阻塞在"等一个人�
 而是用部署期声明的沙箱模式（`read-only` / `workspace-write`（默认） / `full-access`）约束工具的写权限。
 需要审批的部署可以用 `BEFORE_TOOL_CALL` 钩子自行实现（事件可改写、可 skip）。
 
+**[v1.3 取代]** v1.3 的 TOOL-1 要求 `approval policy`（`never` / `ask` / `allow`），`ask` 可异步挂起。
+P0 仍不实现审批，但已经把 `PolicySet` 放进 namespace metadata 作占位；`ask` 依赖 P3 的 mailbox，
+提前实现只会得到一套用不上的状态机。SandboxMode 保留为 LOCAL 工具的兜底，不再是能力的替代品。
+
 ## 4. 可变事件载荷与活注册表是有意为之
 
 草案明确"没有 FP 的无副作用洁癖"。因此 hook 事件（RequestEvent/ToolCallEvent/MessageEvent/ResponseEvent）
@@ -37,8 +46,11 @@ Jarness 首先是 server runtime / 可嵌入库，不能阻塞在"等一个人�
 ## 5. base dir 与 agent workspace 严格分离
 
 base dir（默认 `$HOME/.local/share/jarness`）只放 `mods/`、`config/`、`presets/`、`sessions.db`、
-`workspaces/`。每个 agent 的 workspace 默认是 `<base>/workspaces/agents/<agentId>` 下的新目录，
+`workspaces/`。每个 agent 的 workspace 默认是 `<base>/workspaces/agents/agent-<pid>` 下的新目录，
 也可以由创建方显式指定，但永远不等于 base dir。工具的相对路径一律相对 agent workspace 解析。
+
+**[v1.3 补充]** pid 由 supervisor 分配，workspace 目录名随之从随机 id 改为稳定的 `agent-<pid>`；
+子 agent（`subagent` / `agent_spawn`）仍默认落在父 workspace 的 `subagents/` 下。
 
 ## 6. Supervisor 最先起、最后退
 
@@ -47,11 +59,18 @@ base dir（默认 `$HOME/.local/share/jarness`）只放 `mods/`、`config/`、`p
 再关 provider/session store/jobs，最后才 `modLoader.close()`（它持有 mod 的 classloader）。
 ModLoader 不随 bake 结束而销毁，因为它还要承担动态加载。
 
+**[v1.3 补充]** supervisor 现在是监督树（合成根 pid 0）；上/下班顺序不变，但关停时会按深度逆序
+停 agent，并先杀子树。
+
 ## 7. Session 存储默认 SQLite，JDBC URL 可配
 
 `config/jarness.toml` 的 `session.store` 是完整 JDBC 串，默认 `jdbc:sqlite:<base>/sessions.db`。
 想换后端（如 Postgres）只需改配置或让 mod 注册其它 SessionStore。
 消息体以 ContentBlock 列表的 JSON 形式落库，reasoning / tool_call / tool_result 在会话恢复后不丢失。
+
+**[v1.3 补充]** store 现在挂在 namespace 上：`[namespaces.<id>] store = "jdbc:sqlite:..."` 可为某个
+namespace 指定独立库（未指定则共用默认库）。行级 namespace 列与 `data/jarness.db` 路径属于 P1 的
+镜像 schema 重写，尚未落地。
 
 ## 8. 动态加载只进不出
 
@@ -70,6 +89,9 @@ tool_calls 按 `index` 聚合，id/name 只在首帧出现。anthropic / respons
 
 provider 失败直接把 turn 置为 FAILED 并带出 HTTP 状态与原因。重试策略（尤其带上下文改写的重试）
 更适合做成 hook/mod，而不是写死在循环里。
+
+**[v1.3 取代]** v1.3 的 LOOP-1 要求 API 超时 / 429 / 解析失败按退避重试（工具超时不重试）。
+P0 仍是失败即 FAILED；重试与 context 压缩一起放到 P4 的循环策略里。
 
 ## 11. maxTokens 的取舍顺序
 
@@ -96,3 +118,22 @@ version 区间（`*`、精确、`1.2.x`、`^`、`~`、`>=` 等、Maven 区间记
 ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 mod 优先、再按 id 字典序，
 保证同输入同顺序。环、缺失必需依赖、版本不满足、incompatible 在场都会产生带 hint 的
 `ModLoadError`（NeoForge 式诊断：phase + 文件 + 原因 + 建议）。
+
+## 15. P0 的 v1.3 对齐取舍（2026-11-01）
+
+把 v1.3 落成代码时，几处需要当场决定：
+
+- **合成根 pid 0**：v1.3 的根是 super agent（真 agent，持平台能力）。P0 先把 pid 0 做成
+  supervisor 持有的合成根（全能力、无会话、不可执行工具），保证树、父子关系、权限交集先成立；
+  P3 再把它换成可执行平台工具的 super agent。这样 CLI/TUI 的 root spawn 不需要先有一个模型。
+- **模型档位**：从 `AgentTemplate` 删除 `model()`，改由 namespace 的 `ModelProfile` 提供；
+  `AgentRequest.model` 与 `manifest.modelProfileId` 可在 spawn 时覆盖（Q38 是否受允许集约束，留到 P4）。
+- **预算只校验不切分**：子预算必须 ≤ 父剩余（token/deadline/spawn depth），但父子各持独立计数器，
+  不做逐层额度切分与归并统计。设计与实现都容易在 P1 加镜像预算字段时一次做对。
+- **能力先做粗粒度**：`Tool.requiredCaps()` 只声明 `CapKind`（fs.read / fs.write / exec / ...），
+  资源级 scope 已进入 `Capability.resource`，但执行侧强制（Rust executor）在 P2；P0 的
+  “拒绝”是类型级的，路径级仍由 SandboxMode 兜底。
+- **namespace 隔离先到 store 引用级**：每个 namespace 可以指向不同 SQLite 库（物理隔离），
+  但共用库时还没有行级 namespace 列；随 P1 的 schema 重写加入。
+- **`AgentRequest` 保留**：它是 CLI/工具用的便捷创建输入，内部立即转成 `AgentManifest`；
+  新代码应优先直接调 `Supervisor.spawn(parentPid, nsId, manifest, caps, budget)`。

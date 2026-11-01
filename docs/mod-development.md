@@ -248,6 +248,10 @@ public class GreetTool implements Tool {
   模型把数字写成字符串是常态，accessor 对此宽容。
 - `ToolException` = 给模型看的可恢复错误（参数错、路径越权等）；其它异常会被循环包成
   `tool failed: ...` 的失败观测。**别让异常裸奔**。
+- 工具可以声明所需能力：覆盖 `requiredCaps()` 返回 `Set<CapKind>`，或者用 core 的
+  `CapabilityTool.of(delegate, CapKind.FS_READ)` 包装。agent 的能力集合不包含对应 kind 时，
+  调用会在工具体执行前被拒绝（模型看到 `capability denied: ...`）。当前是类型级门；
+  路径/域名级 scope 由 P2 的 execution provider 强制。
 - 路径一律过 `ctx.resolve(path, intent)`：`intent=false` 只解析；`intent=true` 会按沙箱
   模式（`read-only` / `workspace-write`（默认） / `full-access`）拦截工作区外的写入。
 - 读写文件前想清楚 `readOnly` 标志：只读工具允许在只读沙箱里用，也允许并行调用；
@@ -265,12 +269,16 @@ ic.templates().register(SimpleAgentTemplate.builder("web-bot")
         .description("A bot that only drives a web system.")
         .systemPrompt("You operate the ACME web console and nothing else.")
         .tools("web_fetch", "mymod_console_click")   // 工具名按提示词顺序排列
-        .model(ModelRef.parse("GB10/DeepSeek-V4-Flash"))  // 可选：钉死模型
         .maxSteps(32)                                 // 可选：-1 = 用运行时默认
         .temperature(0.2)                             // 可选
+        .version("2")                                 // 可选：镜像恢复时校验
         .dynamicMods(false)                           // 只有 Full 该是 true
         .build());
 ```
+
+模板不再携带模型（v1.3 的 I7 / TEMPLATE-1）：模型由 agent 所在 namespace 的
+`ModelProfile` 决定，spawn 时可由 `AgentRequest.model` 或 `manifest.modelProfileId` 覆盖。
+想换模型，改 namespace 配置（`[namespaces.<id>] model = "..."`），而不是改模板。
 
 这正是草案里"手搓小 bot"场景的另一半：Full agent 先 `mod_load` 你的 mod，
 再 `template_register` 一个只含你的工具的模板，再 `agent_spawn` 出小 bot。
@@ -313,6 +321,7 @@ ic.hooks().on(HookPoint.BEFORE_REQUEST, "mymod:trim", 900, ctx -> {
 | 运行时 | `RUNTIME_START` / `RUNTIME_STOP` | `JarnessRuntime` |
 | 模组 | `MODS_LOADED` / `MOD_LOADED` / `INSTRUMENT_APPLIED` | `LoadReport` / `ModEvent` |
 | Agent | `AGENT_CREATED` / `AGENT_STARTING` / `AGENT_STOPPED` / `AGENT_SIGNAL` | `AgentEvent` |
+| 监督 | `SPAWN_DENIED` | `SpawnEvent`（parent / namespace / manifest / 拒绝原因） |
 | 会话 | `SESSION_CREATED` / `SESSION_ENDED` | `SessionEvent` |
 | 循环 | `TURN_START` / `STEP_START` / `TURN_END` | `TurnEvent` |
 | 请求 | `BEFORE_REQUEST` / `AFTER_RESPONSE` | `RequestEvent`（可变）/ `ResponseEvent`（可变） |
@@ -346,6 +355,34 @@ ic.hooks().on(HookPoint.AGENT_CREATED, "mymod:per-agent", 100, ctx -> {
   重新陈述，适合"当前页/当前焦点"这类易漂移的状态。
 - `restrictTools` / `allowTool` / `denyTool` / `visibleToolNames()`：工具可见性是 per-agent 的，
   不影响注册表。
+
+### 6.6 能力、namespace 与子 agent
+
+agent 不是"平铺的对象"，而是监督树节点：
+
+```java
+Agent a = ctx.payload(AgentEvent.class).agent();
+a.pid();              // supervisor 分配，全局唯一
+a.parentPid();        // 0 = 合成根（supervisor 本身）
+a.depth();            // 根 agent = 1
+a.namespaceId();
+a.capabilities();     // 当前持有的 CapabilitySet（可被 revoke 收窄）
+a.budget();           // 剩余 token / deadline / tool slots / spawn depth
+a.manifest();         // 创建时的清单：template / loop / restart / orphan / model profile
+```
+
+从 mod 创建子 agent 时，用 `runtime.spawnFrom(parent, request)`（`subagent` / `agent_spawn`
+内部就是这么做的），不要用 `runtime.spawn(request)` 造第二个根。前者会：
+
+1. 把 child 挂到 parent 的 pid 下，并继承 parent 的 namespace；
+2. 用 `requested ∩ parent.caps ∩ ns.defaults` 算 effective 能力；
+3. 校验 child 预算 ≤ parent 剩余，且 parent 持有 `spawn` 能力；
+4. 默认把 parent 的 `maxSpawnDepth - 1` 传给 child。
+
+拒绝会以 `SpawnDeniedException`（`reason()` 五类 + 模板/模型两类）抛出，同时发
+`SPAWN_DENIED` 事件。要让你的 agent 能跨 namespace，必须显式拿到 `CapKind.NAMESPACE`；
+默认 namespace 只给本地能力（`fs.read` / `fs.write` / `exec` / `net` / `model` / `spawn` /
+`extend` / `ipc`），`platform` 保留给 P3 的 super agent。
 
 ---
 
