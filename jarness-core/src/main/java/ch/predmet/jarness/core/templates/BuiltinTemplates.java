@@ -30,6 +30,8 @@ public final class BuiltinTemplates {
     public static final String STANDARD = "standard";
     /** Template id of the fully capable, runtime-extending agent. */
     public static final String FULL = "full";
+    /** Template id of the platform-level super agent. */
+    public static final String SUPER = "super";
 
     private BuiltinTemplates() {
     }
@@ -90,8 +92,24 @@ public final class BuiltinTemplates {
                 .build();
     }
 
+    /** @return the platform-level super agent template. */
+    public static AgentTemplate superTemplate() {
+        return SimpleAgentTemplate.builder(SUPER)
+                .name("Super")
+                .description("Platform operator: namespaces, daemon status, and the supervision tree.")
+                .systemPrompt("""
+                        You are the Jarness super agent, the only agent holding platform capabilities.
+                        You can list and manage namespaces, inspect the supervision tree and daemon status,
+                        and signal or kill other agents. Prefer the dedicated tools over guessing; report
+                        what you changed and keep the tree healthy.""")
+                .tools("ns_list", "ns_create", "ns_remove",
+                        "daemon_status", "agent_tree", "agent_kill", "agent_signal",
+                        "agent_spawn", "subagent")
+                .build();
+    }
+
     /**
-     * Register all four templates.
+     * Register all built-in templates.
      *
      * @param registry the template registry
      */
@@ -100,5 +118,6 @@ public final class BuiltinTemplates {
         registry.register(minimal());
         registry.register(standard());
         registry.register(full());
+        registry.register(superTemplate());
     }
 }

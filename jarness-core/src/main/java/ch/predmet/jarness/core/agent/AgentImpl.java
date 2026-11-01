@@ -26,6 +26,9 @@ import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.kernel.ExitKind;
 import ch.predmet.jarness.api.kernel.ExitStatus;
+import ch.predmet.jarness.api.loop.LoopHook;
+import ch.predmet.jarness.api.mailbox.Mailbox;
+import ch.predmet.jarness.api.mailbox.MailboxMessage;
 import ch.predmet.jarness.api.namespace.Namespace;
 import ch.predmet.jarness.api.namespace.NamespaceMetadata;
 import ch.predmet.jarness.api.namespace.ModelProfile;
@@ -37,6 +40,7 @@ import ch.predmet.jarness.api.provider.Provider;
 import ch.predmet.jarness.api.provider.ProviderException;
 import ch.predmet.jarness.api.provider.StreamSink;
 import ch.predmet.jarness.api.provider.Usage;
+import ch.predmet.jarness.api.registry.Registry;
 import ch.predmet.jarness.api.session.ContentBlock;
 import ch.predmet.jarness.api.session.ImageMetadata;
 import ch.predmet.jarness.api.session.Message;
@@ -52,6 +56,7 @@ import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
 import ch.predmet.jarness.api.tool.ToolInvocation;
+import ch.predmet.jarness.api.tool.ToolMode;
 import ch.predmet.jarness.api.tool.ToolOutcome;
 import ch.predmet.jarness.api.tool.ToolSpec;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -76,8 +81,11 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -101,6 +109,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class AgentImpl implements Agent {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Logger AUDIT = LoggerFactory.getLogger("ch.predmet.jarness.audit");
 
     private record Submitted(Message message, CompletableFuture<TurnResult> future) {
     }
@@ -128,6 +137,9 @@ public final class AgentImpl implements Agent {
     private final BlockingQueue<Submitted> queue = new LinkedBlockingQueue<>();
     private final Thread worker;
     private final AtomicReference<AgentState> state = new AtomicReference<>(AgentState.NEW);
+    private final MailboxImpl mailbox;
+    private final ExecutorService asyncExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final Map<String, String> pendingAsync = new ConcurrentHashMap<>();
     private final AtomicInteger turnCount = new AtomicInteger();
     private final AtomicInteger stepTotal = new AtomicInteger();
     private final AtomicInteger toolCallTotal = new AtomicInteger();
@@ -147,6 +159,7 @@ public final class AgentImpl implements Agent {
     private final Instant startedAt = Instant.now();
     private volatile Instant lastActivityAt = startedAt;
     private volatile boolean titleKnown;
+    private volatile Registry.Snapshot turnSnapshot;
 
     /** Lets a provider abandon a long generation when the turn is cancelled. */
     private final StreamSink cancellationSink = new StreamSink() {
@@ -179,6 +192,7 @@ public final class AgentImpl implements Agent {
                 ? manifest.name()
                 : template.id() + "-" + pid;
         this.log = LoggerFactory.getLogger("ch.predmet.jarness.agent." + id);
+        this.mailbox = new MailboxImpl(runtime.config().raw().integer("mailbox.capacity", 256));
 
         Path ws = request.workspace() != null
                 ? request.workspace()
@@ -306,6 +320,9 @@ public final class AgentImpl implements Agent {
                     }
                 }
             }
+        }
+        if (deps.get("pending") instanceof List<?> pending && !pending.isEmpty()) {
+            problems.add("asynchronous calls were still pending at the checkpoint");
         }
         if (deps.get("tools") instanceof List<?> tools) {
             for (Object item : tools) {
@@ -452,6 +469,11 @@ public final class AgentImpl implements Agent {
     }
 
     @Override
+    public Mailbox mailbox() {
+        return mailbox;
+    }
+
+    @Override
     public AgentContext ctx() {
         return ctx;
     }
@@ -559,7 +581,7 @@ public final class AgentImpl implements Agent {
     public AgentStatus status() {
         return new AgentStatus(id, pid, parentPid, namespace.id(), depth, name, template.id(), state.get(),
                 session.id(), workspace, turnCount.get(), stepTotal.get(), toolCallTotal.get(),
-                (int) promptTokens.get(), (int) completionTokens.get(), queue.size(), startedAt,
+                (int) promptTokens.get(), (int) completionTokens.get(), queue.size() + mailbox.size(), startedAt,
                 lastActivityAt, lastError);
     }
 
@@ -616,6 +638,10 @@ public final class AgentImpl implements Agent {
 
     private void initiateStop(String reason) {
         stopReason = reason == null || reason.isBlank() ? "stopped" : reason;
+        AgentState current = state.get();
+        if (current != AgentState.FAILED && current != AgentState.SUSPENDED) {
+            state.compareAndSet(current, AgentState.DEACTIVATING);
+        }
         stopFlag = true;
         pauseRequested = false;
         synchronized (pauseLock) {
@@ -644,6 +670,10 @@ public final class AgentImpl implements Agent {
                     break;
                 }
                 if (sub == null) {
+                    MailboxMessage message = mailbox.poll(java.time.Duration.ZERO).orElse(null);
+                    if (message != null) {
+                        handleMailbox(message);
+                    }
                     continue;
                 }
                 runTurn(sub);
@@ -655,6 +685,27 @@ public final class AgentImpl implements Agent {
         } finally {
             drainQueue();
             finishShutdown();
+        }
+    }
+
+    private void handleMailbox(MailboxMessage message) {
+        switch (message.kind()) {
+            case CONTROL -> {
+                if (message.payload() instanceof AgentSignal signal) {
+                    signal(signal);
+                }
+            }
+            case DATA -> submit(String.valueOf(message.payload()));
+            case ASYNC_RESULT -> {
+                if (message.payload() instanceof MailboxMessage.AsyncResult result) {
+                    String text = "# Async tool result\n"
+                            + "callId: " + result.callId() + "\n"
+                            + "tool: " + result.tool() + "\n"
+                            + "ok: " + result.ok() + "\n\n"
+                            + result.text();
+                    submit(Message.user(text));
+                }
+            }
         }
     }
 
@@ -673,12 +724,16 @@ public final class AgentImpl implements Agent {
         }
         busy = false;
         touch();
+        mailbox.close();
+        asyncExecutor.shutdownNow();
+        pendingAsync.clear();
         ctx.closeHooks();
         emit(HookPoint.AGENT_STOPPED, AgentEvent.of(this, stopReason));
         emit(HookPoint.SESSION_ENDED, new SessionEvent(this, session));
         ExitKind kind = state.get() == AgentState.FAILED ? ExitKind.FAILED : exitKind(stopReason);
-        exit.complete(new ExitStatus(kind, stopReason));
-        supervisor.agentTerminated(this, stopReason);
+        ExitStatus status = new ExitStatus(kind, stopReason);
+        exit.complete(status);
+        supervisor.agentTerminated(this, stopReason, status);
     }
 
     private static ExitKind exitKind(String reason) {
@@ -704,6 +759,7 @@ public final class AgentImpl implements Agent {
         }
         busy = true;
         state.set(AgentState.RUNNING);
+        turnSnapshot = runtime.registry().snapshot();
         turnCancel = false;
         cancelReason = "";
         touch();
@@ -713,6 +769,7 @@ public final class AgentImpl implements Agent {
         try {
             String inputText = sub.message().text();
             turn = session.startTurn(inputText);
+            final Turn hookTurn = turn;
             appendMessage(sub.message());
             turnCount.incrementAndGet();
             if (!titleKnown && turn.index() == 0) {
@@ -736,6 +793,8 @@ public final class AgentImpl implements Agent {
             }
 
             emit(HookPoint.TURN_START, TurnEvent.of(this, session, turn));
+            Turn startedTurn = turn;
+            loopHook(hook -> hook.beforeTurn(this, startedTurn));
 
             int maxSteps = template.maxSteps() > 0 ? template.maxSteps() : runtime.config().maxSteps();
             String lastText = "";
@@ -761,11 +820,18 @@ public final class AgentImpl implements Agent {
                 }
 
                 emit(HookPoint.STEP_START, TurnEvent.of(this, session, turn, step));
+                int currentStep = step;
+                loopHook(hook -> hook.beforeStep(this, hookTurn, currentStep));
                 Instant stepStart = Instant.now();
 
                 String system = PromptAssembler.systemPrompt(this, runtime);
                 List<ToolSpec> tools = resolveToolSpecs();
                 List<Message> messages = PromptAssembler.messages(this, session);
+                int compactAfter = runtime.config().raw().integer("limits.compact_after_messages", 200);
+                int compactKeep = runtime.config().raw().integer("limits.compact_keep_messages", 80);
+                if (messages.size() > compactAfter) {
+                    messages = ContextCompactor.compact(messages, compactKeep);
+                }
                 int maxTokens = advertisedMaxTokens(model);
                 if (maxTokens <= 0) {
                     maxTokens = runtime.config().maxTokens();
@@ -793,7 +859,7 @@ public final class AgentImpl implements Agent {
                     Provider provider = runtime.providers().providerFor(event.model());
                     ChatRequest chatRequest = new ChatRequest(event.model(), event.system(), event.messages(),
                             event.tools(), event.maxTokens(), event.temperature(), List.of(), Map.of());
-                    response = provider.complete(chatRequest, cancellationSink);
+                    response = completeWithRetry(provider, chatRequest);
                 } catch (ProviderException e) {
                     log.warn("provider call failed: {}", e.getMessage());
                     turn.addStep(new Step(step, stepStart, Instant.now(), "error", 0, 0, 0));
@@ -816,6 +882,8 @@ public final class AgentImpl implements Agent {
                 int toolCallCount = assistant == null ? 0 : assistant.toolCalls().size();
                 turn.addStep(new Step(step, stepStart, Instant.now(), response.finishReason(),
                         usage.promptTokens(), usage.completionTokens(), toolCallCount));
+                int completedStep = step;
+                loopHook(hook -> hook.afterStep(this, hookTurn, completedStep));
                 stepTotal.incrementAndGet();
                 promptTokens.addAndGet(usage.promptTokens());
                 completionTokens.addAndGet(usage.completionTokens());
@@ -852,6 +920,8 @@ public final class AgentImpl implements Agent {
         } finally {
             if (turn != null) {
                 emit(HookPoint.TURN_END, TurnEvent.of(this, session, turn));
+                Turn finalTurn = turn;
+                loopHook(hook -> hook.afterTurn(this, finalTurn));
             }
             busy = false;
             AgentState s = state.get();
@@ -868,6 +938,40 @@ public final class AgentImpl implements Agent {
                 }
             }
             sub.future().complete(buildResult(turn, turnStart));
+        }
+    }
+
+    /**
+     * Complete with bounded exponential backoff for retryable provider failures (timeouts, 429,
+     * 5xx). Tool timeouts are not retried; they are returned as observations.
+     *
+     * @param provider the provider
+     * @param request  the request
+     * @return the response
+     * @throws ProviderException when retries are exhausted or the failure is not retryable
+     */
+    private ChatResponse completeWithRetry(Provider provider, ChatRequest request) {
+        int retries = Math.max(0, runtime.config().raw().integer("provider.retries", 2));
+        int base = Math.max(1, runtime.config().raw().integer("provider.backoff_ms", 500));
+        int cap = Math.max(base, runtime.config().raw().integer("provider.backoff_max_ms", 8000));
+        for (int attempt = 0; ; attempt++) {
+            try {
+                return provider.complete(request, cancellationSink);
+            } catch (ProviderException e) {
+                if (!e.retryable() || attempt >= retries || stopFlag || turnCancel) {
+                    throw e;
+                }
+                long delay = Math.min(cap, base * (1L << Math.min(attempt, 5)));
+                delay += ThreadLocalRandom.current().nextInt(100);
+                log.warn("provider call failed ({}); retrying {}/{} in {} ms",
+                        e.getMessage(), attempt + 1, retries, delay);
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
         }
     }
 
@@ -906,6 +1010,16 @@ public final class AgentImpl implements Agent {
 
     private List<ToolSpec> resolveToolSpecs() {
         List<ToolSpec> specs = new ArrayList<>();
+        Registry.Snapshot snapshot = turnSnapshot;
+        if (snapshot != null) {
+            for (String name : ctx.visibleToolNames()) {
+                Tool tool = snapshot.tool(name);
+                if (tool != null) {
+                    specs.add(tool.spec());
+                }
+            }
+            return specs;
+        }
         for (Tool tool : runtime.tools().resolve(ctx.visibleToolNames())) {
             specs.add(tool.spec());
         }
@@ -927,7 +1041,8 @@ public final class AgentImpl implements Agent {
         }
 
         ToolInvocation invocation = new ToolInvocation(call.callId(), call.name(), args, raw);
-        Tool tool = runtime.tools().find(call.name()).orElse(null);
+        Registry.Snapshot snapshot = turnSnapshot;
+        Tool tool = snapshot != null ? snapshot.tool(call.name()) : runtime.tools().find(call.name()).orElse(null);
 
         ToolCallEvent before = new ToolCallEvent(this, session, turn, tool, invocation);
         emit(HookPoint.BEFORE_TOOL_CALL, before);
@@ -937,8 +1052,13 @@ public final class AgentImpl implements Agent {
             outcome = ToolOutcome.denied(before.skipReason());
         } else if (tool == null) {
             outcome = ToolOutcome.error("unknown tool \"" + call.name() + "\"");
+        } else if (!ctx.visibleToolNames().contains(tool.name())) {
+            outcome = ToolOutcome.denied("tool \"" + tool.name() + "\" is not visible to this agent");
         } else {
-            String denied = capabilityDenial(tool);
+            String denied = schemaDenial(tool, before.invocation());
+            if (denied == null) {
+                denied = capabilityDenial(tool);
+            }
             if (denied == null) {
                 denied = approvalDenial(tool, before.invocation());
             }
@@ -947,6 +1067,8 @@ public final class AgentImpl implements Agent {
             }
             if (denied != null) {
                 outcome = ToolOutcome.denied(denied);
+            } else if (tool.mode() == ToolMode.ASYNC) {
+                outcome = acceptAsync(tool, before.invocation());
             } else {
                 try {
                     budget.updateAndGet(Budget::consumeToolSlot);
@@ -966,6 +1088,8 @@ public final class AgentImpl implements Agent {
             }
         }
         outcome = truncate(outcome);
+        AUDIT.info("agent={} pid={} tool={} ok={} form={}",
+                id, pid, call.name(), outcome.ok(), tool == null ? "unknown" : tool.form());
 
         ToolCallEvent after = new ToolCallEvent(this, session, turn, tool, before.invocation());
         after.setOutcome(outcome);
@@ -975,6 +1099,52 @@ public final class AgentImpl implements Agent {
         appendMessage(Message.toolResult(call.callId(), call.name(), finalOutcome.ok(),
                 finalOutcome.modelText()));
         touch();
+    }
+
+    /**
+     * Accept an asynchronous tool call. The current turn records {@code accepted}; the completion is
+     * delivered to the mailbox and becomes a later turn.
+     *
+     * @param tool       the tool
+     * @param invocation the call
+     * @return the acceptance observation
+     */
+    private ToolOutcome acceptAsync(Tool tool, ToolInvocation invocation) {
+        String callId = invocation.id() == null || invocation.id().isBlank()
+                ? UUID.randomUUID().toString() : invocation.id();
+        budget.updateAndGet(Budget::consumeToolSlot);
+        toolCallTotal.incrementAndGet();
+        pendingAsync.put(callId, tool.name());
+        asyncExecutor.submit(() -> {
+            try {
+                ToolContext toolContext = toolContextFactory.create(this,
+                        () -> turnCancel || stopFlag, this::currentCancelReason);
+                ToolOutcome result = tool.invoke(invocation, toolContext);
+                ToolOutcome finalResult = result == null ? ToolOutcome.error("tool returned no outcome") : result;
+                pendingAsync.remove(callId);
+                mailbox.offer(MailboxMessage.asyncResult(pid,
+                        new MailboxMessage.AsyncResult(callId, tool.name(), finalResult.ok(),
+                                finalResult.modelText())));
+            } catch (Throwable t) {
+                pendingAsync.remove(callId);
+                log.warn("async tool \"{}\" failed", tool.name(), t);
+                mailbox.offer(MailboxMessage.asyncResult(pid,
+                        new MailboxMessage.AsyncResult(callId, tool.name(), false,
+                                "tool failed: " + t.getMessage())));
+            }
+        });
+        return ToolOutcome.ok("accepted async call " + callId + " (tool " + tool.name()
+                + "); the result will arrive as a later turn");
+    }
+
+    /** @return a denial reason when required tool parameters are missing, else {@code null}. */
+    private String schemaDenial(Tool tool, ToolInvocation invocation) {
+        for (Map.Entry<String, ch.predmet.jarness.api.tool.ToolParameter> entry : tool.spec().parameters().entrySet()) {
+            if (entry.getValue().required() && invocation.arguments().get(entry.getKey()) == null) {
+                return "missing required parameter \"" + entry.getKey() + "\" for tool \"" + tool.name() + "\"";
+            }
+        }
+        return null;
     }
 
     /** @return a denial reason when the agent lacks a capability the tool needs, else {@code null}. */
@@ -1162,6 +1332,10 @@ public final class AgentImpl implements Agent {
         }
         try {
             session.commitTurn(turn, imageMetadata());
+            int every = runtime.config().raw().integer("session.checkpoint_every", 0);
+            if (every > 0 && turn.index() > 0 && turn.index() % every == 0) {
+                namespace.store().checkpoint(session, imageMetadata());
+            }
         } catch (Throwable t) {
             committedTurns.remove(turn.id());
             log.warn("could not commit turn {}", turn.id(), t);
@@ -1181,6 +1355,11 @@ public final class AgentImpl implements Agent {
         }
         deps.put("mods", mods);
         deps.put("tools", ctx.visibleToolNames());
+        List<Map<String, Object>> pending = new ArrayList<>();
+        for (Map.Entry<String, String> entry : pendingAsync.entrySet()) {
+            pending.add(Map.of("callId", entry.getKey(), "tool", entry.getValue()));
+        }
+        deps.put("pending", pending);
         AgentState snapshot = state.get() == AgentState.RUNNING ? AgentState.IDLE : state.get();
         return new ImageMetadata(id, session.id(), namespace.id(), ImageMetadata.SCHEMA_VERSION, -1,
                 deps, budget.get(), capabilities.get(), snapshot.name(), Instant.now());
@@ -1201,6 +1380,16 @@ public final class AgentImpl implements Agent {
         } catch (Throwable t) {
             log.warn("hook dispatch at {} failed", point, t);
             return null;
+        }
+    }
+
+    private void loopHook(java.util.function.Consumer<LoopHook> invocation) {
+        for (LoopHook hook : runtime.loopHooks().all()) {
+            try {
+                invocation.accept(hook);
+            } catch (Throwable t) {
+                log.warn("loop hook {} failed", hook.name(), t);
+            }
         }
     }
 

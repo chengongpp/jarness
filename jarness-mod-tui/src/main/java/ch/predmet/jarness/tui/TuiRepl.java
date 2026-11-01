@@ -84,9 +84,15 @@ final class TuiRepl implements Runnable {
             case "/help" -> out.println("""
                     /agents              list running agents
                     /new <tpl> [name]    spawn an agent and switch to it
+                    /super               switch to the platform super agent (pid 0)
                     /use <id-prefix>     switch the active agent
                     /stop                stop the active agent
                     /quit                leave the TUI""");
+            case "/super" -> {
+                Agent superAgent = runtime.supervisor().ensureSuperAgent();
+                active = superAgent;
+                out.println("now talking to the super agent (" + superAgent.id() + ")");
+            }
             case "/agents" -> runtime.supervisor().statuses().forEach(s ->
                     out.printf("%s  %-14s %-8s %-8s turns=%d%n", s.agentId(), s.name(),
                             s.templateId(), s.state(), s.turns()));

@@ -99,14 +99,14 @@ class LiveEndpointIntegrationTest {
         try (JarnessRuntime rt = runtime(TestEndpoints.gb10())) {
             Agent a = rt.spawn(AgentRequest.builder("void").name("a").build());
             Agent b = rt.spawn(AgentRequest.builder("void").name("b").build());
-            assertEquals(2, rt.supervisor().size());
+            assertEquals(3, rt.supervisor().size(), "super agent + a + b");
             assertTrue(rt.supervisor().status(a.id()).isPresent());
             TurnResult ra = a.submit("Say A").get();
             assertTrue(ra.ok(), ra.error());
             rt.supervisor().signal(b.id(), ch.predmet.jarness.api.agent.AgentSignal.STOP);
             assertTrue(b.awaitIdle(Duration.ofSeconds(5)));
             rt.supervisor().unregister(b.id());
-            assertEquals(1, rt.supervisor().size());
+            assertEquals(2, rt.supervisor().size(), "super agent + a");
         }
     }
 

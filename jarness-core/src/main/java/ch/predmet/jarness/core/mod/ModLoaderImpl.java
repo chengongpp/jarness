@@ -283,11 +283,24 @@ public final class ModLoaderImpl implements ModLoader {
 
     // ------------------------------------------------------------------ instantiate + register
 
+    private static boolean apiCompatible(String apiVersion) {
+        String major = apiVersion == null ? "" : apiVersion.split("\\.")[0].trim();
+        return major.isEmpty() || major.equals(ModDescriptor.API_VERSION);
+    }
+
     private LoadedMod registerCandidate(ModResolver.Candidate candidate, ModProvider provider,
                                         Preset preset, List<ModLoadError> errors) {
         ModDescriptor descriptor = candidate.descriptor();
         String modId = descriptor.id();
         Path file = candidate.file();
+
+        if (!apiCompatible(descriptor.apiVersion())) {
+            errors.add(error(modId, file, "API",
+                    "mod targets API version " + descriptor.apiVersion()
+                            + ", runtime implements " + ModDescriptor.API_VERSION,
+                    null, "rebuild the mod against the current jarness-api"));
+            return null;
+        }
 
         JarnessMod instance;
         try {

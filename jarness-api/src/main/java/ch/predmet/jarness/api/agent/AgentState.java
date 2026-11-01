@@ -12,6 +12,10 @@ public enum AgentState {
     WAITING,
     /** Checkpointed and detached from the process; the image can be resumed later. */
     SUSPENDED,
+    /** Stop requested; the worker is draining an in-flight turn. */
+    DEACTIVATING,
+    /** Being recreated by the restart policy. */
+    RESTARTING,
     /** Stopped normally; the agent will not accept more work. */
     STOPPED,
     /** Stopped because a turn failed unrecoverably. */

@@ -15,9 +15,12 @@ import ch.predmet.jarness.api.exec.ExecutionRegistry;
 import ch.predmet.jarness.api.hook.HookBus;
 import ch.predmet.jarness.api.hook.HookPoint;
 import ch.predmet.jarness.api.instrument.InstrumentRegistry;
+import ch.predmet.jarness.api.ipc.IpcRegistry;
 import ch.predmet.jarness.api.job.JobRegistry;
 import ch.predmet.jarness.api.mod.LoadReport;
 import ch.predmet.jarness.api.mod.ModLoader;
+import ch.predmet.jarness.api.loop.LoopHookRegistry;
+import ch.predmet.jarness.api.observe.Observation;
 import ch.predmet.jarness.api.namespace.ModelProfile;
 import ch.predmet.jarness.api.namespace.Namespace;
 import ch.predmet.jarness.api.namespace.NamespaceMetadata;
@@ -27,6 +30,7 @@ import ch.predmet.jarness.api.namespace.PolicySet;
 import ch.predmet.jarness.api.preset.Preset;
 import ch.predmet.jarness.api.provider.ModelRef;
 import ch.predmet.jarness.api.provider.ProviderRegistry;
+import ch.predmet.jarness.api.registry.Registry;
 import ch.predmet.jarness.api.session.SessionStore;
 import ch.predmet.jarness.api.supervisor.Supervisor;
 import ch.predmet.jarness.api.tool.ToolRegistry;
@@ -36,13 +40,17 @@ import ch.predmet.jarness.core.agent.SupervisorImpl;
 import ch.predmet.jarness.core.config.ConfigLoader;
 import ch.predmet.jarness.core.exec.ExecutionRegistryImpl;
 import ch.predmet.jarness.core.exec.LocalExecutionProvider;
+import ch.predmet.jarness.core.ipc.IpcRegistryImpl;
 import ch.predmet.jarness.core.config.PresetLoader;
 import ch.predmet.jarness.core.hook.HookBusImpl;
 import ch.predmet.jarness.core.job.JobRegistryImpl;
 import ch.predmet.jarness.core.mod.ModLoaderImpl;
 import ch.predmet.jarness.core.namespace.NamespaceImpl;
 import ch.predmet.jarness.core.namespace.NamespaceRegistryImpl;
+import ch.predmet.jarness.core.loop.LoopHookRegistryImpl;
+import ch.predmet.jarness.core.observe.ObservationImpl;
 import ch.predmet.jarness.core.provider.ProviderRegistryImpl;
+import ch.predmet.jarness.core.registry.RegistryImpl;
 import ch.predmet.jarness.core.session.LocalSessionStore;
 import ch.predmet.jarness.core.tool.ToolContextImpl;
 import ch.predmet.jarness.core.tool.ToolRegistryImpl;
@@ -77,6 +85,10 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     private final JobRegistryImpl jobRegistry;
     private final ExecutionRegistryImpl executionRegistry;
     private final ApprovalRegistryImpl approvalRegistry;
+    private final IpcRegistryImpl ipcRegistry;
+    private final RegistryImpl registry;
+    private final ObservationImpl observation;
+    private final LoopHookRegistryImpl loopHooks;
     private final Map<String, SessionStore> stores;
     private final SessionStore sessionStore;
     private final NamespaceRegistryImpl namespaces;
@@ -96,8 +108,13 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         this.jobRegistry = new JobRegistryImpl();
         this.executionRegistry = new ExecutionRegistryImpl();
         this.approvalRegistry = new ApprovalRegistryImpl();
+        this.ipcRegistry = new IpcRegistryImpl();
+        this.registry = new RegistryImpl(() -> this);
         this.stores = new LinkedHashMap<>();
         this.sessionStore = store(config.sessionStoreUrl());
+        this.observation = new ObservationImpl(sessionStore, java.time.Duration.ofMillis(
+                config.raw().integer("observe.poll_ms", 250)));
+        this.loopHooks = new LoopHookRegistryImpl();
         this.namespaces = buildNamespaces(sessionStore);
         this.modLoader = new ModLoaderImpl(layout, () -> this);
         this.supervisor = new SupervisorImpl(() -> this,
@@ -148,6 +165,26 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     @Override
     public ApprovalRegistry approvals() {
         return approvalRegistry;
+    }
+
+    @Override
+    public IpcRegistry ipc() {
+        return ipcRegistry;
+    }
+
+    @Override
+    public Registry registry() {
+        return registry;
+    }
+
+    @Override
+    public Observation observation() {
+        return observation;
+    }
+
+    @Override
+    public LoopHookRegistry loopHooks() {
+        return loopHooks;
     }
 
     @Override
@@ -203,6 +240,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
             report.warnings().forEach(w -> log.warn("mods: {}", w));
         }
         running = true;
+        registry.bump();
         startExecutor();
         warnAboutMissingTemplates();
         hookBus.emit(HookPoint.RUNTIME_START, this);
@@ -275,6 +313,8 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         stores.clear();
         jobRegistry.shutdown();
         executionRegistry.shutdown();
+        ipcRegistry.close();
+        observation.close();
         // The mod loader is released last: it owns the mod classloaders.
         modLoader.close();
         log.info("jarness stopped");

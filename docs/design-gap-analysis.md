@@ -182,3 +182,81 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 - **流控/进度**：协议有 call/cancel/result，没有 per-stream credit 与 progress 帧；P5 补。
 - **executor 崩溃重启**：provider 标 dead、在飞调用失败；自动重启交给 P5 的 restart policy。
 - **审批异步挂起**：ASK 现在同步调 handler（虚拟线程阻塞）；`ask` 的「挂起 → 决策事件 → 继续」复用 P3 的 mailbox。
+
+## 9. P3 落地记录（2026-11-01）
+
+目标：协作层原语、异步结果、平台级 super agent。
+
+已实现：
+
+| 设计 | 落点 |
+| --- | --- |
+| CONC-1 mailbox | 每个 agent 一个有界 `Mailbox`（默认 256，`[mailbox] capacity`）；`DATA` 变 turn、`CONTROL` 走 signal、`ASYNC_RESULT` 在空闲时开新 turn；`Supervisor.deliver` 走 mailbox，满即拒绝（背压） |
+| TOOL-3 异步 | `Tool.mode()==ASYNC` 时当前 turn 记录 `accepted callId`，工具体在虚拟线程执行，完成后投递 mailbox；结果成为下一 turn 的用户消息 |
+| IPC-1/2/3 | `Blackboard`（版本化 cell、CAS、watch、悲观锁、snapshot）、`Channel`（有界/rendezvous、send/trySend/recv/tryRecv/close/select）；`IpcRegistry` 持有句柄 |
+| 句柄即能力 | 创建 board/channel 要求 `IPC` capability；owner pid 退出时 `closeOwned` 关闭全部句柄；`Supervisor.createBoard/createChannel` 委托 |
+| SUPER-1 | pid 0 的真实 super agent：`CapabilitySet.root()`（含 PLATFORM/NAMESPACE）、`super` 模板、平台工具 `ns_list/ns_create/ns_remove/daemon_status/agent_tree/agent_kill/agent_signal`；首次 root spawn（或 `ensureSuperAgent`）时惰性创建 |
+| 平台工具 | 每个平台工具都要求 `PLATFORM`，普通 agent 即使强行 allowTool 也会被能力门拒绝；root agent 挂在 super 下，cap 仍是 ns.defaults |
+| CLI/TUI | `jarness super` 直接和 pid 0 对话；TUI `/super` 切换；`jarness sessions` 可见 super 会话 |
+
+测试（新增 10 个）：`IpcTest`、`MailboxTest`、`MailboxTurnTest`（异步工具开新 turn）、`SuperAgentTest`（平台能力/父子/daemon_status 调用）。
+
+未闭环：
+
+- **pending async 对账**：镜像 deps 记录 pending call，但 resume 不会重新挂起或对账；现在把「checkpoint 时仍有 pending」当作 resume 问题，需 `--force-resume` 并接受结果丢失。
+- **审批异步挂起**：ASK 仍是同步 handler（虚拟线程阻塞），没有走 mailbox 的「挂起 → 决策事件 → 继续」。
+- **super agent 启动策略**：为避免每个 CLI 命令都产生会话，pid 0 是惰性创建；设计说 profile 默认 1 个，行为等价但不是启动即创建。
+- **kill 权限**：平台 kill 工具要求 PLATFORM，但 supervisor API 本身仍可被宿主调用；「只接受外部平台信号」没有额外的来源签名。
+
+## 10. P4 落地记录（2026-11-01）
+
+| 设计 | 落点 |
+| --- | --- |
+| MOD-3 快照 | `Registry.version()/snapshot()`；每次 turn 开始时 pin 一份 snapshot，工具解析和调用都走这份快照；动态加载/`Supervisor.loadDynamic` bump 版本，下一 turn 才可见 |
+| MOD-1 扩展点 | Snapshot 暴露 tools / templates / providers / executionProviders / loopHooks / sessionStores；`sessionStores` 按 namespace 聚合 |
+| apiVersion | `ModDescriptor.apiVersion`（默认 `1`），`jnmods.toml` 支持 `api_version`/`apiVersion`；不兼容在 `ModLoaderImpl` 以 `API` phase 报错 |
+| loopHooks | `LoopHook.beforeTurn/beforeStep/afterStep/afterTurn` + 有序 `LoopHookRegistry`；异常隔离 |
+| LOOP-1 重试 | `completeWithRetry`：仅对 `ProviderException.retryable()`（408/409/429/5xx）退避重试，指数退避 + jitter，`provider.retries/backoff_ms/backoff_max_ms`；工具超时不重试 |
+| 压缩 | `ContextCompactor` 在消息数超过 `limits.compact_after_messages` 时保留尾部 `compact_keep_messages`，切在 user 边界并插入省略说明；不落盘 |
+| TOOL-1 schema | 调度器先检查必填参数，再能力/审批/预算；必填缺失直接 `tool_error` |
+
+测试：`RegistryTest`、`LoopHookTest`、`RetryTest`、`CompactionTest`。
+
+未闭环：
+
+- **Registry 还没有 namespaceTemplates / contextAssembler / policies 表**；loopHooks 覆盖了结构性钩子，策略目前只有 approval。
+- **压缩不是模型总结**：为了不额外消耗一次模型调用，当前是丢最旧消息 + 说明；需要模型总结时可以替换 `ContextCompactor`。
+- **mod disable**：仍然只加载、不卸载（设计允许）。
+- **Q38**（manifest 覆盖模型档位是否受允许集/预算约束）仍未决，当前允许覆盖。
+
+## 11. P5 落地记录（2026-11-01）
+
+| 设计 | 落点 |
+| --- | --- |
+| EVT-1/LOCAL-1 观测 | `Observation.events(sessionId, fromTurn)` 回放 committed 事件；`Observation.subscribe` 轮询 `events` 表做 CDC，只在 turn 事务提交后可见；`[observe] poll_ms` |
+| 审计 | `ch.predmet.jarness.audit` logger：spawn/deny/restart、tool 调用、executor call/result、approval |
+| LIFE-1 restart | `RestartPolicy.ON_FAILURE/ALWAYS`：失败退出后按 `supervisor.restart_delay_ms` 重建同一 session，`max_restarts` 限制；`AGENT_RESTARTED` 事件 |
+| 生命周期 | `AgentState` 增补 `SUSPENDED` / `DEACTIVATING` / `RESTARTING`；`Supervisor.suspend` = checkpoint + SUSPENDED |
+| 冷观测 | 明确 v1 不做（设计如此） |
+
+测试：`ObservationTest`、`RestartTest`。
+
+**明确未实现（开放问题，不是遗漏）**：
+
+- **remote executor / TLS / enrollment**：设计把它标为可选，且 Q36（远端 TLS 是否强制、secret 轮换）、Q37（帧格式）仍是待定；本地 executor 已完整，远端沿用同一协议的扩展点留待 Q36 定案。
+- **Q38**：模型档位覆盖的约束。
+- **per-stream credit / progress 帧**：本地调用是请求-结果多路复用，没有流控和进度回调。
+- **净网工具**：`web_search/web_fetch` 仍在 daemon 内（NET 能力门在工具级），executor 的 net.fetch 与 NET scope 强制未做。
+- **checkpoint 自动阈值**：支持 `session.checkpoint_every`，默认关闭；设计允许阈值后调。
+
+## 12. 对照不变量
+
+| 不变量 | 状态 |
+| --- | --- |
+| I1 每个 agent 在树中且绑定唯一 ns | 是；super 也是树节点，root 挂 super |
+| I2 子 agent 只能经 spawn/fork | 是；工具走 `spawnFrom`，裸线程不创建 agent |
+| I3 能力沿树只减不增 | 是；`requested ∩ parent ∩ ns`，resume 再与镜像 caps 求交 |
+| I4 镜像唯一权威、turn 事务 | 是；`LocalSessionStore` 单事务 commit，未提交 turn 崩溃即丢 |
+| I5 副作用只从 core/executor 强制点 | 部分；默认 relay 从 executor 出，`execution.mode=local` 仍可在 daemon 内 |
+| I6 spawn=exec / fork=fork | 是；fork 复制消息（旧 turn 的镜像复制待细化） |
+| I7 ModelProfile 属 ns | 是；模板无模型字段，manifest/request 可覆盖（Q38） |

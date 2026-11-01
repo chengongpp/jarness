@@ -22,6 +22,9 @@ public final class Jarness {
     /** The runtime version, kept in sync with the Maven project version. */
     public static final String VERSION = "0.1.0-SNAPSHOT";
 
+    /** The mod API major version mods declare in {@code jnmods.toml}. */
+    public static final String API_VERSION = "1";
+
     private Jarness() {
     }
 

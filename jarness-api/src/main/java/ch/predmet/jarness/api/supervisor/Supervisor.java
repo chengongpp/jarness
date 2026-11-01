@@ -7,7 +7,10 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.AgentTree;
 import ch.predmet.jarness.api.kernel.Budget;
+import ch.predmet.jarness.api.ipc.Blackboard;
+import ch.predmet.jarness.api.ipc.Channel;
 import ch.predmet.jarness.api.kernel.ImageRef;
+import ch.predmet.jarness.api.mod.LoadReport;
 import ch.predmet.jarness.api.kernel.ExitStatus;
 import ch.predmet.jarness.api.kernel.ResourceStats;
 import ch.predmet.jarness.api.namespace.Namespace;
@@ -37,6 +40,18 @@ public interface Supervisor extends AutoCloseable {
 
     /** @return the namespace table this supervisor spawns into. */
     NamespaceRegistry namespaces();
+
+    /**
+     * @return the platform super agent at pid 0, if it has been created
+     */
+    Optional<Agent> superAgent();
+
+    /**
+     * Create the platform super agent at pid 0 if it does not exist.
+     *
+     * @return the super agent
+     */
+    Agent ensureSuperAgent();
 
     /** Start accepting agents. Idempotent. */
     void start();
@@ -218,6 +233,38 @@ public interface Supervisor extends AutoCloseable {
      * @return the resumed agent
      */
     Agent resume(ImageRef image);
+
+    /**
+     * Load a mod jar into the running runtime.
+     *
+     * @param jar the mod jar
+     * @return the load report
+     */
+    default LoadReport loadDynamic(java.nio.file.Path jar) {
+        throw new UnsupportedOperationException("this supervisor does not support dynamic loading");
+    }
+
+    /**
+     * Create a blackboard owned by an agent.
+     *
+     * @param owner owner
+     * @param id    board id
+     * @return the board
+     */
+    default Blackboard createBoard(Agent owner, String id) {
+        throw new UnsupportedOperationException("this supervisor does not expose IPC handles");
+    }
+
+    /**
+     * Create a channel owned by an agent.
+     *
+     * @param owner    owner
+     * @param capacity buffer capacity; 0 for rendezvous
+     * @return the channel
+     */
+    default Channel createChannel(Agent owner, int capacity) {
+        throw new UnsupportedOperationException("this supervisor does not expose IPC handles");
+    }
 
     /**
      * Create a namespace.

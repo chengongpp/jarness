@@ -23,7 +23,8 @@ import java.nio.file.Path;
                 TemplatesCommand.class,
                 ProvidersCommand.class,
                 NamespacesCommand.class,
-                SessionsCommand.class
+                SessionsCommand.class,
+                SuperCommand.class
         })
 public final class Main implements Runnable {
 

@@ -27,6 +27,8 @@ public enum HookPoint {
     AGENT_STARTING,
     /** An agent stopped; payload is an {@code AgentEvent} whose reason explains why. */
     AGENT_STOPPED,
+    /** A failed agent was restarted by policy; payload is an {@code AgentEvent} with the new pid. */
+    AGENT_RESTARTED,
     /** A signal was delivered to an agent; payload is an {@code AgentEvent}. */
     AGENT_SIGNAL,
     /** A spawn or fork was refused; payload is a {@code SpawnEvent}. */

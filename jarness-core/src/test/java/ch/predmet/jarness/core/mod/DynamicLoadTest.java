@@ -111,7 +111,7 @@ class DynamicLoadTest {
             assertTrue(report.loadedIds().contains("jarness.core"), report::render);
             assertTrue(report.loadedIds().contains("test.jarmod"), report::render);
             assertTrue(runtime.tools.contains("read"), "core instruments should have applied");
-            assertEquals(4, runtime.templates.ids().size());
+            assertEquals(5, runtime.templates.ids().size());
         }
     }
 
@@ -208,6 +208,26 @@ class DynamicLoadTest {
         @Override
         public ch.predmet.jarness.api.approval.ApprovalRegistry approvals() {
             return new ch.predmet.jarness.core.approval.ApprovalRegistryImpl();
+        }
+
+        @Override
+        public ch.predmet.jarness.api.ipc.IpcRegistry ipc() {
+            return new ch.predmet.jarness.core.ipc.IpcRegistryImpl();
+        }
+
+        @Override
+        public ch.predmet.jarness.api.registry.Registry registry() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ch.predmet.jarness.api.observe.Observation observation() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ch.predmet.jarness.api.loop.LoopHookRegistry loopHooks() {
+            return new ch.predmet.jarness.core.loop.LoopHookRegistryImpl();
         }
 
         @Override

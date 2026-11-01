@@ -9,10 +9,14 @@ import ch.predmet.jarness.api.config.JarnessLayout;
 import ch.predmet.jarness.api.exec.ExecutionRegistry;
 import ch.predmet.jarness.api.hook.HookBus;
 import ch.predmet.jarness.api.instrument.InstrumentRegistry;
+import ch.predmet.jarness.api.ipc.IpcRegistry;
 import ch.predmet.jarness.api.job.JobRegistry;
 import ch.predmet.jarness.api.mod.ModLoader;
+import ch.predmet.jarness.api.loop.LoopHookRegistry;
+import ch.predmet.jarness.api.observe.Observation;
 import ch.predmet.jarness.api.namespace.NamespaceRegistry;
 import ch.predmet.jarness.api.provider.ProviderRegistry;
+import ch.predmet.jarness.api.registry.Registry;
 import ch.predmet.jarness.api.session.SessionStore;
 import ch.predmet.jarness.api.supervisor.Supervisor;
 import ch.predmet.jarness.api.tool.ToolRegistry;
@@ -73,6 +77,18 @@ public interface JarnessRuntime extends AutoCloseable {
 
     /** @return the approval handler table. */
     ApprovalRegistry approvals();
+
+    /** @return the collaboration primitive table. */
+    IpcRegistry ipc();
+
+    /** @return the versioned extension-point registry. */
+    Registry registry();
+
+    /** @return committed-event observability. */
+    Observation observation();
+
+    /** @return loop-boundary hooks. */
+    LoopHookRegistry loopHooks();
 
     /** @return whether the runtime is started. */
     boolean isRunning();

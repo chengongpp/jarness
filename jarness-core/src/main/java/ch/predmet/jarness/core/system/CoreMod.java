@@ -28,6 +28,13 @@ import ch.predmet.jarness.core.tool.builtin.TemplateRegisterTool;
 import ch.predmet.jarness.core.tool.builtin.WebFetchTool;
 import ch.predmet.jarness.core.tool.builtin.WebSearchTool;
 import ch.predmet.jarness.core.tool.builtin.WriteFileTool;
+import ch.predmet.jarness.core.tool.builtin.platform.AgentKillTool;
+import ch.predmet.jarness.core.tool.builtin.platform.AgentSignalTool;
+import ch.predmet.jarness.core.tool.builtin.platform.AgentTreeTool;
+import ch.predmet.jarness.core.tool.builtin.platform.DaemonStatusTool;
+import ch.predmet.jarness.core.tool.builtin.platform.NsCreateTool;
+import ch.predmet.jarness.core.tool.builtin.platform.NsListTool;
+import ch.predmet.jarness.core.tool.builtin.platform.NsRemoveTool;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -99,6 +106,17 @@ public final class CoreMod implements JarnessMod {
                     ic.tools().register(CapabilityTool.of(new ModLoadTool(), CapKind.EXTEND));
                     ic.tools().register(CapabilityTool.of(new TemplateRegisterTool(), CapKind.EXTEND));
                     ic.tools().register(CapabilityTool.of(new AgentSpawnTool(), CapKind.SPAWN));
+                });
+
+        ctx.instruments().register("tools.platform", true, 240,
+                "Platform tools for the super agent: namespaces, daemon status, tree and signals.", ic -> {
+                    ic.tools().register(CapabilityTool.of(new NsListTool(), CapKind.PLATFORM));
+                    ic.tools().register(CapabilityTool.of(new NsCreateTool(), CapKind.PLATFORM));
+                    ic.tools().register(CapabilityTool.of(new NsRemoveTool(), CapKind.PLATFORM));
+                    ic.tools().register(CapabilityTool.of(new DaemonStatusTool(), CapKind.PLATFORM));
+                    ic.tools().register(CapabilityTool.of(new AgentTreeTool(), CapKind.PLATFORM));
+                    ic.tools().register(CapabilityTool.of(new AgentKillTool(), CapKind.PLATFORM));
+                    ic.tools().register(CapabilityTool.of(new AgentSignalTool(), CapKind.PLATFORM));
                 });
 
         ctx.instruments().register("prompt.baseline", true, 300,

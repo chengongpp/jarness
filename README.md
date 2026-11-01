@@ -22,7 +22,8 @@ make            # 打包到 dist/（jarness.jar + mods/*.jar + executor/jarness-
 ./jn            # 拉起交互式 TUI（tui preset）
 ./jn -c "你好"  # 一次性运行（等价于 jarness run）
 ./jn sessions   # 列镜像（turns/budget/checkpoint/deps）
-./jn mods       # 透传其它 CLI 子命令（mods/presets/templates/providers/namespaces/sessions/tui/run）
+./jn super      # 和平台 super agent（pid 0）对话
+./jn mods       # 透传其它 CLI 子命令（mods/presets/templates/providers/namespaces/sessions/super/tui/run）
 ```
 
 也可以直接用 jar：`java -jar dist/jarness.jar run "你好"`。
@@ -59,8 +60,10 @@ timeout_seconds = 300   # policy=ask 的等待上限
 ## Agent、namespace 与能力
 
 每个 agent 都是监督树中的一个节点：有 pid、parent、唯一 namespace、能力集合与预算。
-root agent 挂在 supervisor 的合成根 pid 0 下；`subagent` / `agent_spawn` 创建的是调用者的子节点，
+pid 0 是真实的 **super agent**（平台能力：`platform` / `namespace`），首次 root spawn 或
+`jarness super` 时惰性创建；root agent 挂在它下面。`subagent` / `agent_spawn` 创建调用者的子节点，
 能力按 `requested ∩ parent ∩ namespace.defaults` 逐层衰减，父节点退出时子树被 kill。
+super agent 有 `ns_list/ns_create/ns_remove/daemon_status/agent_tree/agent_kill/agent_signal` 平台工具。
 
 namespace 可从 `config/jarness.toml` 声明：
 
@@ -79,6 +82,19 @@ capabilities = ["fs.read", "fs.write", "model"]     # 可选：缺省为本地�
 
 `./jn namespaces` 或 `java -jar dist/jarness.jar namespaces` 会列出各 namespace 的能力上限、
 模型档位与默认模板。
+
+## 协作、异步与观测
+
+- **mailbox**：每个 agent 有有界 mailbox；`Supervisor.deliver` 走 mailbox（满即拒绝），异步工具完成后
+  结果作为新 turn 回来。
+- **IPC**：`runtime.ipc()` 提供 blackboard（版本化 cell / CAS / watch / 锁）和 channel
+  （有界/rendezvous / select）；句柄需要 `ipc` 能力，owner 退出时自动关闭。
+- **观测**：`runtime.observation().subscribe(sessionId, consumer)` 订阅 committed 事件；
+  `events(sessionId, fromTurn)` 做回放。所有事件都在 turn 的同一事务里写入。
+- **重启**：`RestartPolicy.ON_FAILURE/ALWAYS` + `[supervisor] restart_delay_ms/max_restarts`，
+  失败后从同一 session/image 重建。
+- **循环钩子**：`runtime.loopHooks()` 提供 `beforeTurn/beforeStep/afterStep/afterTurn`；
+  `runtime.registry()` 暴露带版本的扩展点快照，每个 turn pin 一份。
 
 ## 测试
 

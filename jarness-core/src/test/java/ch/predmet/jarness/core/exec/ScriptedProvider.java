@@ -17,15 +17,26 @@ import java.util.List;
 import java.util.Map;
 
 /** A deterministic model: asks for one {@code write}, then answers {@code done}. */
-final class ScriptedProvider implements Provider {
+public final class ScriptedProvider implements Provider {
 
-    static final String ID = "scripted";
-    static final String MODEL = "scripted-model";
+    public static final String ID = "scripted";
+    public static final String MODEL = "scripted-model";
 
     private final ProviderProfile profile = new ProviderProfile(ID, "Scripted", ProviderKind.OPENAI_COMPAT,
             "http://localhost", "", Map.of(), List.of(ModelInfo.of(MODEL, MODEL, 4096, 1024)),
             Map.of(), ConfigView.empty());
+    private final String tool;
+    private final String arguments;
     private int calls;
+
+    public ScriptedProvider() {
+        this("write", "{\"file_path\":\"relay.txt\",\"content\":\"from the executor\"}");
+    }
+
+    public ScriptedProvider(String tool, String arguments) {
+        this.tool = tool;
+        this.arguments = arguments;
+    }
 
     @Override
     public String id() {
@@ -56,8 +67,7 @@ final class ScriptedProvider implements Provider {
     public ChatResponse complete(ChatRequest request, StreamSink sink) {
         calls++;
         if (calls == 1) {
-            ContentBlock.ToolCall call = new ContentBlock.ToolCall("call-1", "write",
-                    "{\"file_path\":\"relay.txt\",\"content\":\"from the executor\"}");
+            ContentBlock.ToolCall call = new ContentBlock.ToolCall("call-1", tool, arguments);
             return new ChatResponse("r1", new Message(null, Role.ASSISTANT, List.of(call), null),
                     new Usage(11, 5, 0), "tool_calls", "");
         }

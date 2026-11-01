@@ -49,6 +49,9 @@ import java.util.concurrent.TimeoutException;
  */
 public final class LocalExecutionProvider implements ExecutionProvider {
 
+    private static final org.slf4j.Logger AUDIT =
+            org.slf4j.LoggerFactory.getLogger("ch.predmet.jarness.audit");
+
     /** Default executor tools advertised before the hello frame arrives. */
     public static final Set<String> DEFAULT_TOOLS = Set.of(
             "fs.read", "fs.write", "fs.edit", "fs.delete", "fs.glob", "fs.grep", "exec.run");
@@ -242,6 +245,8 @@ public final class LocalExecutionProvider implements ExecutionProvider {
         long deadlineMs = request.deadline() == null
                 ? System.currentTimeMillis() + 120_000L
                 : request.deadline().toEpochMilli();
+        AUDIT.info("exec call={} tool={} ns={} workspace={}", callId, request.tool(),
+                request.namespace(), request.workspace());
         CompletableFuture<ExecResult> future = new CompletableFuture<>();
         pending.put(callId, future);
         try {
@@ -253,7 +258,10 @@ public final class LocalExecutionProvider implements ExecutionProvider {
         }
         try {
             long wait = Math.max(1L, deadlineMs - System.currentTimeMillis());
-            return future.get(wait, TimeUnit.MILLISECONDS);
+            ExecResult result = future.get(wait, TimeUnit.MILLISECONDS);
+            AUDIT.info("exec result call={} tool={} ok={} exit={}", callId, request.tool(),
+                    result.ok(), result.exitCode());
+            return result;
         } catch (TimeoutException e) {
             pending.remove(callId);
             cancel(callId, "deadline");

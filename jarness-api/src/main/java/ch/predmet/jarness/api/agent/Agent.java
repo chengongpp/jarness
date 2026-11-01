@@ -4,6 +4,8 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.kernel.ExitStatus;
+import ch.predmet.jarness.api.mailbox.Mailbox;
+import ch.predmet.jarness.api.mailbox.MailboxMessage;
 import ch.predmet.jarness.api.namespace.Namespace;
 import ch.predmet.jarness.api.session.Message;
 import ch.predmet.jarness.api.session.Session;
@@ -81,6 +83,19 @@ public interface Agent extends AutoCloseable {
 
     /** @return the supervisor that owns this agent. */
     Supervisor supervisor();
+
+    /** @return this agent's mailbox. */
+    Mailbox mailbox();
+
+    /**
+     * Offer a message to the mailbox.
+     *
+     * @param message the message
+     * @return whether the mailbox accepted it
+     */
+    default boolean deliver(MailboxMessage message) {
+        return mailbox().offer(message);
+    }
 
     /** @return this agent's extension context. */
     AgentContext ctx();

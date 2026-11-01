@@ -18,7 +18,7 @@ class ModResolverTest {
 
     private static ModResolver.Candidate mod(String id, ModDependency... deps) {
         return new ModResolver.Candidate(
-                new ModDescriptor(id, id, "1.0", "", "com.example." + id, List.of(deps), false, false),
+                new ModDescriptor(id, id, "1.0", "1", "", "com.example." + id, List.of(deps), false, false),
                 Path.of(id + ".jar"));
     }
 

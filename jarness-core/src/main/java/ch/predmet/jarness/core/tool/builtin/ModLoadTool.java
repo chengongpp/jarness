@@ -59,6 +59,7 @@ public final class ModLoadTool implements Tool {
             if (!report.ok()) {
                 return ToolOutcome.error("mod load failed", rendered);
             }
+            ctx.runtime().registry().bump();
             StringBuilder out = new StringBuilder();
             if (!rendered.isBlank()) {
                 out.append(rendered);

@@ -14,7 +14,7 @@ public final class TuiModProvider implements ModProvider {
 
     @Override
     public ModDescriptor descriptor() {
-        return new ModDescriptor(TuiMod.ID, "Jarness TUI", Jarness.VERSION,
+        return new ModDescriptor(TuiMod.ID, "Jarness TUI", Jarness.VERSION, Jarness.API_VERSION,
                 "Interactive terminal UI", TuiMod.class.getName(), List.of(), true, false);
     }
 

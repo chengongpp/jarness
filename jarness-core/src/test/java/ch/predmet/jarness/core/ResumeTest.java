@@ -82,7 +82,8 @@ class ResumeTest {
             ResumeDeniedException denied = assertThrows(ResumeDeniedException.class,
                     () -> runtime.spawn(AgentRequest.builder("void").sessionId(session.id()).build()));
             assertTrue(denied.getMessage().contains("ghost.mod"), denied.getMessage());
-            assertTrue(runtime.supervisor().size() == 0);
+            assertTrue(runtime.supervisor().superAgent().isPresent());
+            assertEquals(1, runtime.supervisor().size(), "only the super agent exists");
         }
     }
 

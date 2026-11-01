@@ -422,6 +422,21 @@ ic.tools().register(RelayTool.of(tool, "fs.write"));   // 模型仍看到 MyTool
 - 审批：`runtime.approvals().register("tui", (request, timeout) -> ...)`。`[approval] policy = "ask"`
   时没有 handler 就 deny；`never` 只放行 `allow` 列表里的工具名。审批发生在能力门之后、执行之前。
 
+### 6.9 协作原语与平台面
+
+- **mailbox**：`agent.mailbox()`；`agent.deliver(MailboxMessage.data(...))` 或
+  `runtime.supervisor().deliver(id, text)`。满时 `offer` 返回 false，按背压处理，不要忙等。
+- **blackboard**：`runtime.ipc().createBoard(owner, "task-board")`；`read/write/compareAndSet/watch/lock`。
+  句柄就是权限，不需要再走能力检查；owner 退出时自动 close。
+- **channel**：`runtime.ipc().createChannel(owner, capacity)`；capacity=0 是会合通道；多消费者时每条
+  消息只被一个接收者取走，广播请用 topic + 每订阅者 mailbox。
+- **super agent**：`runtime.supervisor().ensureSuperAgent()` 或 `jarness super`；平台工具
+  `ns_*`/`daemon_status`/`agent_tree`/`agent_kill`/`agent_signal` 要求 `platform` 能力。
+  普通 agent 不要试图调用这些工具，能力门会拒绝。
+- **异步工具**：`Tool.mode()` 返回 `ASYNC` 即进入异步路径；当前 turn 只看到 `accepted callId`，
+  完成后 mailbox 投递结果并新开一个 turn。工具实现要保证幂等，因为调用方可能重试。
+- **观测**：`runtime.observation().subscribe(sessionId, consumer)`；只有 committed 事件可见。
+
 ---
 
 ## 7. Mod 配置

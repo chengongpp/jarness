@@ -17,6 +17,7 @@ import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.AgentTree;
 import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.kernel.ImageRef;
+import ch.predmet.jarness.api.kernel.ExitKind;
 import ch.predmet.jarness.api.kernel.ExitStatus;
 import ch.predmet.jarness.api.kernel.OrphanPolicy;
 import ch.predmet.jarness.api.kernel.Origin;
@@ -81,6 +82,7 @@ public final class SupervisorImpl implements Supervisor {
     private final CapabilityDerivation derivation = new CapabilityDerivation();
     private final CapabilitySet rootCaps = CapabilitySet.root();
     private final AtomicLong nextPid = new AtomicLong(1L);
+    private final Map<String, Integer> restartAttempts = new HashMap<>();
     private final AtomicLong nextCapId = new AtomicLong(1L);
     private final ReentrantLock lock = new ReentrantLock();
 
@@ -114,6 +116,31 @@ public final class SupervisorImpl implements Supervisor {
     }
 
     @Override
+    public Optional<Agent> superAgent() {
+        lock.lock();
+        try {
+            return Optional.ofNullable(agents.get(ROOT_PID));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Agent ensureSuperAgent() {
+        lock.lock();
+        try {
+            Agent agent = ensureSuperAgentLocked();
+            if (agent == null) {
+                throw new IllegalStateException("the \"super\" template is not registered; "
+                        + "enable the jarness.core templates instrument");
+            }
+            return agent;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
     public void start() {
         lock.lock();
         try {
@@ -144,7 +171,7 @@ public final class SupervisorImpl implements Supervisor {
         Objects.requireNonNull(request, "request");
         requireRunning();
         long parentPid = request.parentPid();
-        Agent parent = parentPid == ROOT_PID ? null : agentOrNull(parentPid);
+        Agent parent = agentOrNull(parentPid);
         String namespaceId = request.namespaceId() != null
                 ? request.namespaceId()
                 : parent != null ? parent.namespaceId() : Namespace.DEFAULT_ID;
@@ -214,8 +241,11 @@ public final class SupervisorImpl implements Supervisor {
                 throw deny(SpawnDeniedException.Reason.NOT_RUNNING, "supervisor is not running",
                         parentPid, requestedNs, manifest);
             }
-            Agent parent = parentPid == ROOT_PID ? null : agents.get(parentPid);
-            if (parentPid != ROOT_PID && parent == null) {
+            if (parentPid == ROOT_PID) {
+                ensureSuperAgentLocked();
+            }
+            Agent parent = agents.get(parentPid);
+            if (parent == null) {
                 throw deny(SpawnDeniedException.Reason.PARENT,
                         "unknown parent pid " + parentPid, parentPid, requestedNs, manifest);
             }
@@ -318,6 +348,37 @@ public final class SupervisorImpl implements Supervisor {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Create the pid-0 super agent with platform capabilities, unless it already exists.
+     *
+     * @return the super agent, or {@code null} when the {@code super} template is unavailable
+     */
+    private Agent ensureSuperAgentLocked() {
+        Agent existing = agents.get(ROOT_PID);
+        if (existing != null) {
+            return existing;
+        }
+        AgentTemplate template = runtime.get().templates().find("super").orElse(null);
+        if (template == null) {
+            return null;
+        }
+        Namespace namespace = namespaces.defaultNs();
+        AgentManifest manifest = AgentManifest.builder("super").name("super").build();
+        CapabilitySet assigned = assignCapIds(rootCaps, rootCaps, ROOT_PID);
+        AgentRequest request = AgentRequest.builder("super")
+                .name("super")
+                .namespace(namespace.id())
+                .build();
+        AgentImpl agent = new AgentImpl(runtime.get(), this, ROOT_PID, null, 0, namespace, manifest,
+                assigned, Budget.unlimited(), request, template, toolContexts, null);
+        agents.put(ROOT_PID, agent);
+        children.putIfAbsent(ROOT_PID, new ArrayList<>());
+        audit.info("created super agent pid=0 with {} platform capability grant(s)", assigned.size());
+        emit(HookPoint.AGENT_CREATED, AgentEvent.of(agent, "created"));
+        emit(HookPoint.AGENT_STARTING, AgentEvent.of(agent, "starting"));
+        return agent;
     }
 
     private AgentTemplate resolveTemplate(AgentManifest manifest, Namespace namespace, AgentRequest request,
@@ -541,7 +602,7 @@ public final class SupervisorImpl implements Supervisor {
         if (state == AgentState.STOPPED || state == AgentState.FAILED) {
             return false;
         }
-        return agent.submit(text) != null;
+        return agent.deliver(ch.predmet.jarness.api.mailbox.MailboxMessage.data(ROOT_PID, text));
     }
 
     @Override
@@ -590,6 +651,10 @@ public final class SupervisorImpl implements Supervisor {
     @Override
     public AgentTree tree(long pid) {
         if (pid == ROOT_PID) {
+            Agent superAgent = agentOrNull(ROOT_PID);
+            if (superAgent != null) {
+                return node(superAgent);
+            }
             List<AgentTree> roots = new ArrayList<>();
             for (Long child : childPids(ROOT_PID)) {
                 Agent agent = agentOrNull(child);
@@ -742,6 +807,25 @@ public final class SupervisorImpl implements Supervisor {
         return spawn(request);
     }
 
+    @Override
+    public ch.predmet.jarness.api.mod.LoadReport loadDynamic(java.nio.file.Path jar) {
+        ch.predmet.jarness.api.mod.LoadReport report = runtime.get().modLoader().loadJar(jar, true);
+        if (report.ok()) {
+            runtime.get().registry().bump();
+        }
+        return report;
+    }
+
+    @Override
+    public ch.predmet.jarness.api.ipc.Blackboard createBoard(Agent owner, String id) {
+        return runtime.get().ipc().createBoard(owner, id);
+    }
+
+    @Override
+    public ch.predmet.jarness.api.ipc.Channel createChannel(Agent owner, int capacity) {
+        return runtime.get().ipc().createChannel(owner, capacity);
+    }
+
     // ------------------------------------------------------------- namespaces
 
     @Override
@@ -836,14 +920,84 @@ public final class SupervisorImpl implements Supervisor {
      * @param agent  the agent that exited
      * @param reason short reason
      */
-    void agentTerminated(Agent agent, String reason) {
+    void agentTerminated(Agent agent, String reason, ExitStatus status) {
         if (shuttingDown) {
             return;
         }
         for (Long child : childPids(agent.pid())) {
             stopSubtree(child, "parent " + agent.pid() + " exited: " + reason);
         }
+        runtime.get().ipc().closeOwned(agent.pid());
         releaseCaps(agent.capabilities());
+        scheduleRestart(agent, reason, status);
+    }
+
+    /**
+     * Apply the agent's {@link ch.predmet.jarness.api.kernel.RestartPolicy}.
+     *
+     * @param agent  the exited agent
+     * @param reason exit reason
+     * @param status exit status
+     */
+    private void scheduleRestart(Agent agent, String reason, ExitStatus status) {
+        if (shuttingDown || agent.manifest().restart() == ch.predmet.jarness.api.kernel.RestartPolicy.NO) {
+            return;
+        }
+        String lower = reason == null ? "" : reason.toLowerCase();
+        boolean intentional = lower.contains("shutdown") || lower.contains("unregister")
+                || lower.contains("suspend") || lower.contains("parent")
+                || lower.contains("stop signal") || lower.contains("subagent")
+                || lower.contains("closed");
+        boolean failed = status.kind() == ExitKind.FAILED;
+        if (intentional) {
+            return;
+        }
+        if (agent.manifest().restart() == ch.predmet.jarness.api.kernel.RestartPolicy.ON_FAILURE && !failed) {
+            return;
+        }
+        int max = Math.max(0, runtime.get().config().raw().integer("supervisor.max_restarts", 3));
+        int attempt = restartAttempts.merge(agent.session().id(), 1, Integer::sum);
+        if (attempt > max) {
+            audit.warn("not restarting {}: restart budget {} exhausted", agent.id(), max);
+            return;
+        }
+        long delay = Math.max(0, runtime.get().config().raw().integer("supervisor.restart_delay_ms", 250));
+        String sessionId = agent.session().id();
+        String name = agent.name();
+        String namespaceId = agent.namespaceId();
+        String templateId = agent.template().id();
+        AgentManifest manifest = agent.manifest();
+        CapabilitySet caps = agent.capabilities();
+        Budget budget = agent.budget();
+        long parentPid = agent.parentPid();
+        audit.info("restarting {} (attempt {}/{}) in {} ms", agent.id(), attempt, max, delay);
+        Thread.ofVirtual().name("jarness-restart-" + agent.pid()).start(() -> {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            long parent = parentPid != ROOT_PID && agentOrNull(parentPid) == null ? ROOT_PID : parentPid;
+            AgentRequest request = AgentRequest.builder(templateId)
+                    .name(name)
+                    .sessionId(sessionId)
+                    .namespace(namespaceId)
+                    .parent(parent)
+                    .capabilities(caps)
+                    .budget(budget)
+                    .build();
+            try {
+                long pid = spawnInternal(parent, namespaceId, manifest, caps, budget, request, null);
+                Agent restarted = agentOrNull(pid);
+                if (restarted != null) {
+                    emit(HookPoint.AGENT_RESTARTED, AgentEvent.of(restarted, "restarted: " + reason));
+                }
+                audit.info("restarted session {} as pid {}", sessionId, pid);
+            } catch (Throwable t) {
+                audit.warn("could not restart agent {}: {}", agent.id(), t.getMessage());
+            }
+        });
     }
 
     private void stopSubtree(long pid, String reason) {

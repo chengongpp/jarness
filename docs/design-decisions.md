@@ -169,3 +169,43 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
   就是 deny；`never` 是显式收紧，不是默认值。
 - **ASK 先同步**：虚拟线程上阻塞等待 handler 最简单；设计允许的异步挂起要等 P3 的 mailbox，否则
   会得到一套没有事件驱动的挂起状态机。
+
+## 18. P3 协作层的取舍（2026-11-01）
+
+- **mailbox 与提交队列分开**：宿主/模型的 `submit` 仍走 turn 队列；mailbox 承载控制、协作和异步完成。
+  两者都由同一个 worker 消费，避免两个线程同时开 turn。mailbox 有界，`Supervisor.deliver` 满即返回
+  false，这就是背压。
+- **异步结果用 user 消息开新 turn**：执行器返回时原来的 turn 已经 commit，直接塞 tool_result 会形成
+  「无 assistant tool_call 的孤儿结果」；用一条带 `# Async tool result` 的 user 消息最稳，provider
+  不用改消息协议。代价是模型看到的是叙述而非结构化 tool 消息。
+- **IPC 是进程内对象，不是 JSON 协议**：`Blackboard`/`Channel` 直接是 Java 接口；句柄即能力
+  （创建要 `ipc`），owner 退出 `closeOwned`。跨 daemon 明确不做。
+- **super agent 惰性创建**：设计说启动 profile 默认 1 个；但每次 `jarness mods`/`sessions` 都建一个
+  会话不划算。实现改为「第一次 root spawn 或 `jarness super` 时创建」，权限模型不变。
+- **平台工具的只读/写分级**：`ns_create/ns_remove/agent_kill/agent_signal` 是 mutating；普通 agent
+  即使通过 `allowTool` 强行加进来，也会被 `PLATFORM` 能力门拒绝。
+
+## 19. P4 循环/扩展的取舍（2026-11-01）
+
+- **turn 开始时 pin Registry 快照**：动态加载后「下一 turn 读新快照」靠这个实现；同一 turn 里新加的
+  工具不会出现在当前请求中，符合 MOD-3。
+- **Registry 版本是显式 bump**：初始 bake、`Supervisor.loadDynamic`、`mod_load` 工具各 bump 一次；
+  直接调用 `tools().register` 的 mod 不会自动 bump（这是 mod 自己的责任），避免在注册表里埋回调。
+- **重试只针对 provider**：`ProviderException.retryable()` 决定；工具超时不重试，按设计返回 timeout
+  观测。重试有上限和 jitter，避免惊群。
+- **压缩先做「丢最旧 + 说明」**：模型总结需要额外一次调用，且会改变上下文语义；先用可预测的
+  窗口策略满足 LOOP-1 的 Compact 状态，未来可替换成摘要器。
+- **schema 校验只查必填**：类型仍由工具 accessor 宽容处理（模型把 5 写成 "5" 是常态）；必填缺失在
+  调度器就返回 `tool_error`，不再进入工具体。
+
+## 20. P5 观测/恢复的取舍（2026-11-01）
+
+- **CDC 用轮询而不是推送**：事件已经在 SQLite 的 `events` 表里，轮询实现最小、可重放、不引入第二套
+  通知总线；`[observe] poll_ms` 可调。冷观测明确不做。
+- **审计用 logger 而不是新表**：spawn/deny/restart、tool、executor call/result、approval 都写
+  `ch.predmet.jarness.audit`；需要 SQL 审计时再加表，避免 P5 把 schema 再翻一遍。
+- **重启从同一 session 重建**：`ON_FAILURE` 只在 `ExitStatus.FAILED` 时触发，`ALWAYS` 还要求退出不是
+  主动 stop/shutdown/suspend/parent；`max_restarts` 防循环。重新 spawn 会走一遍 resume 依赖校验。
+- **lazy 的 super 与 restart 的组合**：super 自身失败时 restart 逻辑会尝试以 pid 0 的 parent 重建；
+  由于 super 已在 registry 里，这条路径目前会拒绝并记日志，不递归。真实部署里 super 的失败应由
+  外部平台重启 daemon。

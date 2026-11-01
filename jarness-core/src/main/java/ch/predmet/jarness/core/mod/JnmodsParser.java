@@ -64,7 +64,8 @@ public final class JnmodsParser {
             String reason = depView.findString("reason").orElse(null);
             dependencies.add(new ModDependency(depId, range, kind, ordering, reason));
         }
-        return new ModDescriptor(id, name, version, description, entrypoint, dependencies, false, false);
+        String apiVersion = view.string("api_version", view.string("apiVersion", "1"));
+        return new ModDescriptor(id, name, version, apiVersion, description, entrypoint, dependencies, false, false);
     }
 
     /**
