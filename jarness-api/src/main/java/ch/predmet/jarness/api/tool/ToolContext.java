@@ -2,9 +2,11 @@ package ch.predmet.jarness.api.tool;
 
 import ch.predmet.jarness.api.JarnessRuntime;
 import ch.predmet.jarness.api.agent.Agent;
+import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.ConfigView;
 import ch.predmet.jarness.api.config.SandboxMode;
 import ch.predmet.jarness.api.job.JobRegistry;
+import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.session.Session;
 import org.slf4j.Logger;
 
@@ -26,6 +28,12 @@ public interface ToolContext {
 
     /** @return the agent's working directory; relative paths resolve against it. */
     Path workspace();
+
+    /** @return the capabilities the calling agent currently holds. */
+    CapabilitySet capabilities();
+
+    /** @return the calling agent's remaining budget. */
+    Budget budget();
 
     /** @return the sandbox mode this call must respect. */
     SandboxMode sandbox();

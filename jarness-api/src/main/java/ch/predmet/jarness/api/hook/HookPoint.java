@@ -29,6 +29,8 @@ public enum HookPoint {
     AGENT_STOPPED,
     /** A signal was delivered to an agent; payload is an {@code AgentEvent}. */
     AGENT_SIGNAL,
+    /** A spawn or fork was refused; payload is a {@code SpawnEvent}. */
+    SPAWN_DENIED,
 
     /** A session was created or resumed; payload is a {@code SessionEvent}. */
     SESSION_CREATED,

@@ -1,7 +1,5 @@
 package ch.predmet.jarness.api.agent;
 
-import ch.predmet.jarness.api.provider.ModelRef;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -11,11 +9,11 @@ import java.util.UUID;
  * Plain template implementation, usable by mods and by agents that author templates at runtime.
  *
  * @param id           template id
+ * @param version      template version
  * @param name         display name
  * @param description  one-liner
  * @param systemPrompt system prompt preamble
  * @param toolNames    exposed tools
- * @param model        pinned model, or {@code null}
  * @param maxSteps     step cap, {@code -1} for the runtime default
  * @param temperature  temperature override, or {@code null}
  * @param dynamicMods  whether the template may load mods at runtime
@@ -23,11 +21,11 @@ import java.util.UUID;
  */
 public record SimpleAgentTemplate(
         String id,
+        String version,
         String name,
         String description,
         String systemPrompt,
         List<String> toolNames,
-        ModelRef model,
         int maxSteps,
         Double temperature,
         boolean dynamicMods,
@@ -35,6 +33,7 @@ public record SimpleAgentTemplate(
 
     public SimpleAgentTemplate {
         id = id == null || id.isBlank() ? "tpl-" + UUID.randomUUID().toString().substring(0, 8) : id;
+        version = version == null || version.isBlank() ? "1" : version.trim();
         name = name == null || name.isBlank() ? id : name;
         description = description == null ? "" : description;
         systemPrompt = systemPrompt == null ? "" : systemPrompt;
@@ -54,19 +53,19 @@ public record SimpleAgentTemplate(
 
     /** @return a copy carrying a different system prompt. */
     public SimpleAgentTemplate withSystemPrompt(String prompt) {
-        return new SimpleAgentTemplate(id, name, description, prompt, toolNames, model, maxSteps, temperature,
+        return new SimpleAgentTemplate(id, version, name, description, prompt, toolNames, maxSteps, temperature,
                 dynamicMods, metadata);
     }
 
     /** @return a copy exposing exactly {@code tools}. */
     public SimpleAgentTemplate withTools(List<String> tools) {
-        return new SimpleAgentTemplate(id, name, description, systemPrompt, tools, model, maxSteps, temperature,
+        return new SimpleAgentTemplate(id, version, name, description, systemPrompt, tools, maxSteps, temperature,
                 dynamicMods, metadata);
     }
 
-    /** @return a copy bound to {@code model}. */
-    public SimpleAgentTemplate withModel(ModelRef newModel) {
-        return new SimpleAgentTemplate(id, name, description, systemPrompt, toolNames, newModel, maxSteps,
+    /** @return a copy carrying a different version. */
+    public SimpleAgentTemplate withVersion(String newVersion) {
+        return new SimpleAgentTemplate(id, newVersion, name, description, systemPrompt, toolNames, maxSteps,
                 temperature, dynamicMods, metadata);
     }
 
@@ -74,11 +73,11 @@ public record SimpleAgentTemplate(
     public static final class Builder {
 
         private final String id;
+        private String version = "1";
         private String name;
         private String description = "";
         private String systemPrompt = "";
         private final List<String> toolNames = new java.util.ArrayList<>();
-        private ModelRef model;
         private int maxSteps = -1;
         private Double temperature;
         private boolean dynamicMods;
@@ -87,6 +86,12 @@ public record SimpleAgentTemplate(
         private Builder(String id) {
             this.id = id;
             this.name = id;
+        }
+
+        /** @return this builder. */
+        public Builder version(String value) {
+            this.version = value;
+            return this;
         }
 
         /** @return this builder. */
@@ -122,12 +127,6 @@ public record SimpleAgentTemplate(
         }
 
         /** @return this builder. */
-        public Builder model(ModelRef value) {
-            this.model = value;
-            return this;
-        }
-
-        /** @return this builder. */
         public Builder maxSteps(int value) {
             this.maxSteps = value;
             return this;
@@ -153,7 +152,7 @@ public record SimpleAgentTemplate(
 
         /** @return the built template. */
         public SimpleAgentTemplate build() {
-            return new SimpleAgentTemplate(id, name, description, systemPrompt, toolNames, model, maxSteps,
+            return new SimpleAgentTemplate(id, version, name, description, systemPrompt, toolNames, maxSteps,
                     temperature, dynamicMods, metadata);
         }
     }

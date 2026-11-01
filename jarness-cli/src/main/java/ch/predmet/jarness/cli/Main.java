@@ -21,7 +21,8 @@ import java.nio.file.Path;
                 ModsCommand.class,
                 PresetsCommand.class,
                 TemplatesCommand.class,
-                ProvidersCommand.class
+                ProvidersCommand.class,
+                NamespacesCommand.class
         })
 public final class Main implements Runnable {
 
@@ -35,6 +36,10 @@ public final class Main implements Runnable {
         /** Preset to activate. */
         @Option(names = {"--preset"}, description = "Preset to activate. Default: the configured preset.")
         public String preset;
+
+        /** Namespace to spawn agents in. */
+        @Option(names = {"-N", "--namespace"}, description = "Namespace to spawn agents in. Default: default.")
+        public String namespace;
     }
 
     @Mixin

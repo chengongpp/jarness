@@ -45,6 +45,8 @@ public final class ConfigLoader {
                 view.findString("paths.workspace_root").map(Path::of).orElse(defaults.workspaceRoot()),
                 view.string("logging.level", defaults.logLevel()),
                 view.bool("supervisor.auto_start", defaults.autoStartSupervisor()),
+                view.integer("supervisor.max_depth", defaults.maxDepth()),
+                view.integer("supervisor.max_children", defaults.maxChildren()),
                 view);
     }
 

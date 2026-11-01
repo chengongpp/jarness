@@ -2,9 +2,11 @@ package ch.predmet.jarness.core.tool;
 
 import ch.predmet.jarness.api.JarnessRuntime;
 import ch.predmet.jarness.api.agent.Agent;
+import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.ConfigView;
 import ch.predmet.jarness.api.config.SandboxMode;
 import ch.predmet.jarness.api.job.JobRegistry;
+import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.session.Session;
 import ch.predmet.jarness.api.tool.ToolContext;
 import org.slf4j.Logger;
@@ -64,6 +66,16 @@ public final class ToolContextImpl implements ToolContext {
     @Override
     public Path workspace() {
         return agent.workspace();
+    }
+
+    @Override
+    public CapabilitySet capabilities() {
+        return agent.capabilities();
+    }
+
+    @Override
+    public Budget budget() {
+        return agent.budget();
     }
 
     @Override

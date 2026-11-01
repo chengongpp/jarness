@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.system;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.hook.HookPoint;
 import ch.predmet.jarness.api.hook.event.AgentEvent;
 import ch.predmet.jarness.api.mod.JarnessMod;
@@ -9,6 +10,7 @@ import ch.predmet.jarness.api.provider.ProviderProfile;
 import ch.predmet.jarness.core.provider.ProfileLoader;
 import ch.predmet.jarness.core.provider.ProviderFactory;
 import ch.predmet.jarness.core.templates.BuiltinTemplates;
+import ch.predmet.jarness.core.tool.CapabilityTool;
 import ch.predmet.jarness.core.tool.builtin.AgentSpawnTool;
 import ch.predmet.jarness.core.tool.builtin.BashTool;
 import ch.predmet.jarness.core.tool.builtin.DeleteFileTool;
@@ -67,34 +69,34 @@ public final class CoreMod implements JarnessMod {
 
         ctx.instruments().register("tools.fs", true, 200,
                 "Filesystem tools: read, write, edit, delete, glob, grep.", ic -> {
-                    ic.tools().register(new ReadFileTool());
-                    ic.tools().register(new WriteFileTool());
-                    ic.tools().register(new EditFileTool());
-                    ic.tools().register(new DeleteFileTool());
-                    ic.tools().register(new GlobTool());
-                    ic.tools().register(new GrepTool());
+                    ic.tools().register(CapabilityTool.of(new ReadFileTool(), CapKind.FS_READ));
+                    ic.tools().register(CapabilityTool.of(new WriteFileTool(), CapKind.FS_WRITE));
+                    ic.tools().register(CapabilityTool.of(new EditFileTool(), CapKind.FS_WRITE));
+                    ic.tools().register(CapabilityTool.of(new DeleteFileTool(), CapKind.FS_WRITE));
+                    ic.tools().register(CapabilityTool.of(new GlobTool(), CapKind.FS_READ));
+                    ic.tools().register(CapabilityTool.of(new GrepTool(), CapKind.FS_READ));
                 });
 
         ctx.instruments().register("tools.exec", true, 210,
                 "Shell execution and background job control: bash, job_output, job_kill, job_list.", ic -> {
-                    ic.tools().register(new BashTool());
-                    ic.tools().register(new JobOutputTool());
-                    ic.tools().register(new JobKillTool());
-                    ic.tools().register(new JobListTool());
+                    ic.tools().register(CapabilityTool.of(new BashTool(), CapKind.EXEC));
+                    ic.tools().register(CapabilityTool.of(new JobOutputTool(), CapKind.EXEC));
+                    ic.tools().register(CapabilityTool.of(new JobKillTool(), CapKind.EXEC));
+                    ic.tools().register(CapabilityTool.of(new JobListTool(), CapKind.EXEC));
                 });
 
         ctx.instruments().register("tools.web", true, 220,
                 "Web access: web_search, web_fetch.", ic -> {
-                    ic.tools().register(new WebSearchTool());
-                    ic.tools().register(new WebFetchTool());
+                    ic.tools().register(CapabilityTool.of(new WebSearchTool(), CapKind.NET));
+                    ic.tools().register(CapabilityTool.of(new WebFetchTool(), CapKind.NET));
                 });
 
         ctx.instruments().register("tools.agent", true, 230,
                 "Agent and runtime tools: subagent, mod_load, template_register, agent_spawn.", ic -> {
-                    ic.tools().register(new SubagentTool());
-                    ic.tools().register(new ModLoadTool());
-                    ic.tools().register(new TemplateRegisterTool());
-                    ic.tools().register(new AgentSpawnTool());
+                    ic.tools().register(CapabilityTool.of(new SubagentTool(), CapKind.SPAWN));
+                    ic.tools().register(CapabilityTool.of(new ModLoadTool(), CapKind.EXTEND));
+                    ic.tools().register(CapabilityTool.of(new TemplateRegisterTool(), CapKind.EXTEND));
+                    ic.tools().register(CapabilityTool.of(new AgentSpawnTool(), CapKind.SPAWN));
                 });
 
         ctx.instruments().register("prompt.baseline", true, 300,
@@ -105,10 +107,15 @@ public final class CoreMod implements JarnessMod {
                         agentCtx.systemPromptSection("environment", 900, () -> """
                                 # Environment
                                 Working directory: %s — relative paths resolve against it. This is NOT the runtime base directory.
+                                Namespace: %s (agent pid %d, depth %d; capabilities: %s)
                                 Sandbox mode: %s
                                 Current date: %s
                                 """.formatted(
                                 event.agent().workspace(),
+                                event.agent().namespaceId(),
+                                event.agent().pid(),
+                                event.agent().depth(),
+                                event.agent().capabilities().kinds(),
                                 ic.runtime().config().raw().string("sandbox.mode", "workspace-write"),
                                 LocalDate.now()));
                         agentCtx.systemPromptSection("tool-conventions", 950, () -> {

@@ -53,6 +53,10 @@ public final class RunCommand implements Callable<Integer> {
             runtime.start();
             String templateId = template != null ? template : runtime.config().defaultTemplate();
             AgentRequest.Builder builder = AgentRequest.builder(templateId).name(name).workspace(workspace);
+            Main main = (Main) spec.root().userObject();
+            if (main.global().namespace != null) {
+                builder.namespace(main.global().namespace);
+            }
             if (model != null) {
                 builder.model(ModelRef.parse(model));
             }

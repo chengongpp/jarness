@@ -196,6 +196,11 @@ class DynamicLoadTest {
         }
 
         @Override
+        public ch.predmet.jarness.api.namespace.NamespaceRegistry namespaces() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public boolean isRunning() {
             return true;
         }
@@ -206,6 +211,13 @@ class DynamicLoadTest {
 
         @Override
         public ch.predmet.jarness.api.agent.Agent spawn(ch.predmet.jarness.api.agent.AgentRequest request) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ch.predmet.jarness.api.agent.Agent spawnFrom(
+                ch.predmet.jarness.api.agent.Agent parent,
+                ch.predmet.jarness.api.agent.AgentRequest request) {
             throw new UnsupportedOperationException();
         }
 

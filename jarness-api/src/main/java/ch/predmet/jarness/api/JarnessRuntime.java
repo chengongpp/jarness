@@ -9,6 +9,7 @@ import ch.predmet.jarness.api.hook.HookBus;
 import ch.predmet.jarness.api.instrument.InstrumentRegistry;
 import ch.predmet.jarness.api.job.JobRegistry;
 import ch.predmet.jarness.api.mod.ModLoader;
+import ch.predmet.jarness.api.namespace.NamespaceRegistry;
 import ch.predmet.jarness.api.provider.ProviderRegistry;
 import ch.predmet.jarness.api.session.SessionStore;
 import ch.predmet.jarness.api.supervisor.Supervisor;
@@ -62,6 +63,9 @@ public interface JarnessRuntime extends AutoCloseable {
     /** @return the background job registry. */
     JobRegistry jobs();
 
+    /** @return the namespace table. */
+    NamespaceRegistry namespaces();
+
     /** @return whether the runtime is started. */
     boolean isRunning();
 
@@ -76,6 +80,19 @@ public interface JarnessRuntime extends AutoCloseable {
      * @throws IllegalStateException when the runtime is not started
      */
     Agent spawn(AgentRequest request);
+
+    /**
+     * Create an agent as a child of {@code parent}.
+     *
+     * <p>This is what {@code subagent} and {@code agent_spawn} use: the child inherits the parent's
+     * namespace, budget, and attenuated capabilities, so it is a real node in the supervision
+     * tree rather than a second root.</p>
+     *
+     * @param parent  the parent agent
+     * @param request creation input; its {@code parentPid}/{@code namespaceId} are filled in
+     * @return the running child
+     */
+    Agent spawnFrom(Agent parent, AgentRequest request);
 
     /**
      * Create an agent from a registered template.

@@ -1,21 +1,29 @@
 package ch.predmet.jarness.api.agent;
 
-import ch.predmet.jarness.api.provider.ModelRef;
-
 import java.util.List;
 import java.util.Map;
 
 /**
- * A reusable agent definition: the system prompt, the tool set, and the model policy.
+ * A reusable agent definition: the system prompt, the tool set, and the loop it runs.
  *
  * <p>Jarness ships Void, Minimal, Standard, and Full. Nothing about the four is privileged: they are
  * templates registered like any other, so a mod can replace, extend, or wrap them, and the Full
  * template is what lets a running agent author a new template for a sub-bot.</p>
+ *
+ * <p>A template deliberately carries no model: the model is a property of the namespace (or a
+ * spawn-time manifest override), never of the executable definition. Keeping the two apart is what
+ * lets the same template run on a small local model in one namespace and a large remote one in
+ * another.</p>
  */
 public interface AgentTemplate {
 
     /** @return stable template id, e.g. {@code standard}. */
     String id();
+
+    /** @return template version; the image records it so restore can verify compatibility. */
+    default String version() {
+        return "1";
+    }
 
     /** @return human readable name. */
     String name();
@@ -29,17 +37,12 @@ public interface AgentTemplate {
     /** @return the names of the tools this template exposes, in prompt order. */
     List<String> toolNames();
 
-    /** @return a model this template insists on, or {@code null} to use the runtime default. */
-    default ModelRef model() {
-        return null;
-    }
-
     /** @return step cap for one turn, or {@code -1} to use the runtime default. */
     default int maxSteps() {
         return -1;
     }
 
-    /** @return sampling temperature override, or {@code null} for the runtime default. */
+    /** @return sampling temperature override, or {@code null} for the model profile's default. */
     default Double temperature() {
         return null;
     }

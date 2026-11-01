@@ -1,5 +1,7 @@
 package ch.predmet.jarness.api.agent;
 
+import ch.predmet.jarness.api.capability.CapabilitySet;
+import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.provider.ModelRef;
 
 import java.nio.file.Path;
@@ -8,10 +10,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Everything needed to create one agent.
+ * Ergonomic creation input for one agent.
  *
- * <p>Either {@code templateId} names a registered template, or {@code template} supplies one inline;
- * the inline form is what a Full agent uses to spin up a purpose-built bot.</p>
+ * <p>This is the convenience form used by the CLI, the TUI, and the agent-spawning tools. The
+ * supervisor immediately turns it into an {@link ch.predmet.jarness.api.kernel.AgentManifest} plus
+ * spawn parameters; code that needs restart/orphan/loop policy or an explicit parent should call
+ * {@link ch.predmet.jarness.api.supervisor.Supervisor#spawn(long, String,
+ * ch.predmet.jarness.api.kernel.AgentManifest, CapabilitySet, Budget)} directly.</p>
+ *
+ * <p>Either {@code templateId} names a registered template, or {@code template} supplies one inline.</p>
  *
  * @param templateId    registered template id, or {@code null} when {@code template} is supplied
  * @param template      inline template, or {@code null} when {@code templateId} is used
@@ -20,7 +27,11 @@ import java.util.Map;
  * @param sessionId     session to resume, or {@code null} for a new session
  * @param systemPrompt  system prompt override, or {@code null}
  * @param toolNames     tool override; empty means "as the template says"
- * @param model         model override, or {@code null}
+ * @param model         model override, or {@code null} to use the namespace's model profile
+ * @param parentPid     parent pid, {@code 0} for a direct child of the supervisor root
+ * @param namespaceId   namespace id, or {@code null} to use the parent's namespace / {@code default}
+ * @param capabilities  requested capabilities, or {@code null} to inherit from the parent
+ * @param budget        requested budget, or {@code null} for the child default
  * @param metadata      extension metadata
  */
 public record AgentRequest(
@@ -32,6 +43,10 @@ public record AgentRequest(
         String systemPrompt,
         List<String> toolNames,
         ModelRef model,
+        long parentPid,
+        String namespaceId,
+        CapabilitySet capabilities,
+        Budget budget,
         Map<String, Object> metadata) {
 
     public AgentRequest {
@@ -40,6 +55,8 @@ public record AgentRequest(
         if (template == null && (templateId == null || templateId.isBlank())) {
             throw new IllegalArgumentException("AgentRequest needs either a template id or an inline template");
         }
+        parentPid = Math.max(0L, parentPid);
+        namespaceId = namespaceId == null || namespaceId.isBlank() ? null : namespaceId.trim();
     }
 
     /** @return a builder for an agent created from a registered template. */
@@ -63,6 +80,10 @@ public record AgentRequest(
         private String systemPrompt;
         private List<String> toolNames = List.of();
         private ModelRef model;
+        private long parentPid;
+        private String namespaceId;
+        private CapabilitySet capabilities;
+        private Budget budget;
         private final Map<String, Object> metadata = new LinkedHashMap<>();
 
         private Builder(String templateId) {
@@ -125,6 +146,30 @@ public record AgentRequest(
         }
 
         /** @return this builder. */
+        public Builder parent(long pid) {
+            this.parentPid = Math.max(0L, pid);
+            return this;
+        }
+
+        /** @return this builder. */
+        public Builder namespace(String value) {
+            this.namespaceId = value;
+            return this;
+        }
+
+        /** @return this builder. */
+        public Builder capabilities(CapabilitySet value) {
+            this.capabilities = value;
+            return this;
+        }
+
+        /** @return this builder. */
+        public Builder budget(Budget value) {
+            this.budget = value;
+            return this;
+        }
+
+        /** @return this builder. */
         public Builder meta(String key, Object value) {
             this.metadata.put(key, value);
             return this;
@@ -133,7 +178,7 @@ public record AgentRequest(
         /** @return the built request. */
         public AgentRequest build() {
             return new AgentRequest(templateId, template, name, workspace, sessionId, systemPrompt, toolNames,
-                    model, metadata);
+                    model, parentPid, namespaceId, capabilities, budget, metadata);
         }
     }
 }

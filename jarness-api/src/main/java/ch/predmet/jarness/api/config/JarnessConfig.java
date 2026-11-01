@@ -18,6 +18,8 @@ import java.nio.file.Path;
  * @param workspaceRoot          root under which per-agent workspaces are created
  * @param logLevel               root log level for the console appender
  * @param autoStartSupervisor    whether {@code Jarness.start()} starts the supervisor by itself
+ * @param maxDepth               maximum supervision-tree depth, {@code 0} for unbounded
+ * @param maxChildren            maximum direct children per agent, {@code 0} for unbounded
  * @param raw                    the raw configuration document for extension lookups
  */
 public record JarnessConfig(
@@ -34,6 +36,8 @@ public record JarnessConfig(
         Path workspaceRoot,
         String logLevel,
         boolean autoStartSupervisor,
+        int maxDepth,
+        int maxChildren,
         ConfigView raw) {
 
     /** @return configuration defaults for a given base directory. */
@@ -52,6 +56,8 @@ public record JarnessConfig(
                 layout.workspacesDir(),
                 "info",
                 true,
+                16,
+                32,
                 ConfigView.empty());
     }
 }

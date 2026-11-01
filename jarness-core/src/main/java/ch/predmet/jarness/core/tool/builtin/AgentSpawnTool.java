@@ -62,7 +62,7 @@ public final class AgentSpawnTool implements Tool {
             if (name != null && !name.isBlank()) {
                 request.name(name);
             }
-            child = ctx.runtime().spawn(request.build());
+            child = ctx.runtime().spawnFrom(ctx.agent(), request.build());
             child.ctx().put(NestingGuard.KEY, NestingGuard.depth(ctx) + 1);
             StringBuilder out = new StringBuilder();
             out.append("spawned agent ").append(child.id())

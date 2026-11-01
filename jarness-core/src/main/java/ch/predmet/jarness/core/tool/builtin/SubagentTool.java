@@ -64,7 +64,7 @@ public final class SubagentTool implements Tool {
             String prompt = invocation.requireString("prompt");
             String templateId = pickTemplate(invocation, ctx);
             Path workspace = freshChildWorkspace(ctx);
-            child = ctx.runtime().spawn(AgentRequest.builder(templateId)
+            child = ctx.runtime().spawnFrom(ctx.agent(), AgentRequest.builder(templateId)
                     .name("sub:" + description)
                     .workspace(workspace)
                     .build());

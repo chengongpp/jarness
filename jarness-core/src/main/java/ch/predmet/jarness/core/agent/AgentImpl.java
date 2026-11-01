@@ -8,6 +8,8 @@ import ch.predmet.jarness.api.agent.AgentSignal;
 import ch.predmet.jarness.api.agent.AgentState;
 import ch.predmet.jarness.api.agent.AgentTemplate;
 import ch.predmet.jarness.api.agent.TurnResult;
+import ch.predmet.jarness.api.capability.CapKind;
+import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.hook.HookContext;
 import ch.predmet.jarness.api.hook.HookPoint;
 import ch.predmet.jarness.api.hook.event.AgentEvent;
@@ -17,6 +19,13 @@ import ch.predmet.jarness.api.hook.event.ResponseEvent;
 import ch.predmet.jarness.api.hook.event.SessionEvent;
 import ch.predmet.jarness.api.hook.event.ToolCallEvent;
 import ch.predmet.jarness.api.hook.event.TurnEvent;
+import ch.predmet.jarness.api.kernel.AgentManifest;
+import ch.predmet.jarness.api.kernel.Budget;
+import ch.predmet.jarness.api.kernel.ExitKind;
+import ch.predmet.jarness.api.kernel.ExitStatus;
+import ch.predmet.jarness.api.namespace.Namespace;
+import ch.predmet.jarness.api.namespace.NamespaceMetadata;
+import ch.predmet.jarness.api.namespace.ModelProfile;
 import ch.predmet.jarness.api.provider.ChatRequest;
 import ch.predmet.jarness.api.provider.ChatResponse;
 import ch.predmet.jarness.api.provider.ModelInfo;
@@ -55,11 +64,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -73,6 +85,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * passes {@code BEFORE_REQUEST} and may be cancelled, responses pass {@code AFTER_RESPONSE}, and
  * each tool call passes {@code BEFORE_TOOL_CALL}/{@code AFTER_TOOL_CALL}. Hook dispatch is
  * defensive: a failing hook is logged and never kills the worker thread.</p>
+ *
+ * <p>The agent holds a pid, a parent, one namespace, a mutable capability set (revocation takes
+ * effect on the next tool call), and a mutable budget (tokens and tool slots are spent as the turn
+ * progresses). Stopping the worker kills the subtree and resolves the agent's exit status.</p>
  */
 public final class AgentImpl implements Agent {
 
@@ -82,7 +98,14 @@ public final class AgentImpl implements Agent {
     }
 
     private final JarnessRuntime runtime;
-    private final Supervisor supervisor;
+    private final SupervisorImpl supervisor;
+    private final long pid;
+    private final long parentPid;
+    private final int depth;
+    private final Namespace namespace;
+    private final AgentManifest manifest;
+    private final AtomicReference<CapabilitySet> capabilities;
+    private final AtomicReference<Budget> budget;
     private final AgentRequest request;
     private final AgentTemplate template;
     private final ToolContextFactory toolContextFactory;
@@ -92,12 +115,14 @@ public final class AgentImpl implements Agent {
     private final Session session;
     private final AgentContextImpl ctx;
     private final Logger log;
+    private final CompletableFuture<ExitStatus> exit = new CompletableFuture<>();
 
     private final BlockingQueue<Submitted> queue = new LinkedBlockingQueue<>();
     private final Thread worker;
     private final AtomicReference<AgentState> state = new AtomicReference<>(AgentState.NEW);
     private final AtomicInteger turnCount = new AtomicInteger();
     private final AtomicInteger stepTotal = new AtomicInteger();
+    private final AtomicInteger toolCallTotal = new AtomicInteger();
     private final AtomicLong promptTokens = new AtomicLong();
     private final AtomicLong completionTokens = new AtomicLong();
 
@@ -121,17 +146,28 @@ public final class AgentImpl implements Agent {
         }
     };
 
-    AgentImpl(JarnessRuntime runtime, Supervisor supervisor, AgentRequest request, AgentTemplate template,
-              ToolContextFactory toolContextFactory) {
+    AgentImpl(JarnessRuntime runtime, SupervisorImpl supervisor, long pid, Agent parent, int depth,
+              Namespace namespace, AgentManifest manifest, CapabilitySet capabilities, Budget budget,
+              AgentRequest request, AgentTemplate template, ToolContextFactory toolContextFactory,
+              AgentImpl forkFrom) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.supervisor = Objects.requireNonNull(supervisor, "supervisor");
+        this.pid = pid;
+        this.parentPid = parent == null ? SupervisorImpl.ROOT_PID : parent.pid();
+        this.depth = depth;
+        this.namespace = Objects.requireNonNull(namespace, "namespace");
+        this.manifest = Objects.requireNonNull(manifest, "manifest");
+        this.capabilities = new AtomicReference<>(capabilities == null ? CapabilitySet.empty() : capabilities);
+        this.budget = new AtomicReference<>(budget == null ? Budget.unlimited() : budget);
         this.request = Objects.requireNonNull(request, "request");
         this.template = Objects.requireNonNull(template, "template");
         this.toolContextFactory = Objects.requireNonNull(toolContextFactory, "toolContextFactory");
-        this.id = "agent-" + "%08x".formatted(ThreadLocalRandom.current().nextInt(0x10000000, 0x7fffffff));
+        this.id = "agent-" + pid;
         this.name = request.name() != null && !request.name().isBlank()
                 ? request.name()
-                : template.id() + "-" + id.substring(id.length() - 8);
+                : manifest.name() != null && !manifest.name().isBlank()
+                ? manifest.name()
+                : template.id() + "-" + pid;
         this.log = LoggerFactory.getLogger("ch.predmet.jarness.agent." + id);
 
         Path ws = request.workspace() != null
@@ -148,8 +184,18 @@ public final class AgentImpl implements Agent {
         }
         this.workspace = ws;
 
-        this.session = runtime.sessions().loadOrCreate(new SessionInit(
-                request.sessionId(), id, null, workspace, template.id(), initialModel(), request.metadata()));
+        if (forkFrom != null) {
+            Session parentSession = forkFrom.session();
+            this.session = namespace.store().create(new SessionInit(request.sessionId(), id,
+                    parentSession.title(), workspace, template.id(), initialModel(), request.metadata()));
+            for (Message message : parentSession.messages()) {
+                this.session.append(message.withId(UUID.randomUUID().toString()));
+            }
+            log.info("forked image from {}: {} message(s) copied", forkFrom.id(), parentSession.messages().size());
+        } else {
+            this.session = namespace.store().loadOrCreate(new SessionInit(
+                    request.sessionId(), id, null, workspace, template.id(), initialModel(), request.metadata()));
+        }
 
         this.ctx = new AgentContextImpl(this, runtime);
         ctx.baseTools(request.toolNames().isEmpty() ? template.toolNames() : request.toolNames());
@@ -163,9 +209,16 @@ public final class AgentImpl implements Agent {
         this.worker.start();
     }
 
+    /** @return the model selected by the namespace's profile, or {@code null}. */
+    private ModelRef profileModel() {
+        NamespaceMetadata metadata = namespace.metadata();
+        ModelProfile profile = metadata.profile(manifest.modelProfileId());
+        return profile == null ? null : profile.model();
+    }
+
     /** @return a best-effort model for the session record, or {@code null} when none resolves yet. */
     private ModelRef initialModel() {
-        ModelRef candidate = request.model() != null ? request.model() : template.model();
+        ModelRef candidate = request.model() != null ? request.model() : profileModel();
         if (candidate == null) {
             candidate = runtime.providers().defaultModel().orElse(null);
         }
@@ -181,17 +234,18 @@ public final class AgentImpl implements Agent {
     }
 
     /**
-     * Resolve the model for one request: request override, template policy, session binding, then
+     * Resolve the model for one request: request override, namespace profile, session binding, then
      * the runtime default, completed through the provider registry.
      */
     private ModelRef resolveModel() {
         ModelRef candidate = request.model() != null ? request.model()
-                : template.model() != null ? template.model()
+                : profileModel() != null ? profileModel()
                 : session.model() != null ? session.model()
                 : runtime.providers().defaultModel().orElse(null);
         if (candidate == null) {
             throw new IllegalStateException(
-                    "no model configured for agent " + id + ": set a default model or pass one in the request");
+                    "no model configured for agent " + id + ": set a namespace model profile, a default model, "
+                            + "or pass one in the request");
         }
         return runtime.providers().resolve(candidate);
     }
@@ -199,6 +253,41 @@ public final class AgentImpl implements Agent {
     @Override
     public String id() {
         return id;
+    }
+
+    @Override
+    public long pid() {
+        return pid;
+    }
+
+    @Override
+    public long parentPid() {
+        return parentPid;
+    }
+
+    @Override
+    public int depth() {
+        return depth;
+    }
+
+    @Override
+    public Namespace namespace() {
+        return namespace;
+    }
+
+    @Override
+    public AgentManifest manifest() {
+        return manifest;
+    }
+
+    @Override
+    public CapabilitySet capabilities() {
+        return capabilities.get();
+    }
+
+    @Override
+    public Budget budget() {
+        return budget.get();
     }
 
     @Override
@@ -321,10 +410,26 @@ public final class AgentImpl implements Agent {
     }
 
     @Override
+    public Optional<ExitStatus> awaitExit(Duration timeout) {
+        Objects.requireNonNull(timeout, "timeout");
+        try {
+            return Optional.of(exit.get(Math.max(0L, timeout.toMillis()), TimeUnit.MILLISECONDS));
+        } catch (TimeoutException e) {
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
+        } catch (java.util.concurrent.ExecutionException e) {
+            return Optional.of(new ExitStatus(ExitKind.FAILED, String.valueOf(e.getCause())));
+        }
+    }
+
+    @Override
     public AgentStatus status() {
-        return new AgentStatus(id, name, template.id(), state.get(), session.id(), workspace,
-                turnCount.get(), stepTotal.get(), (int) promptTokens.get(), (int) completionTokens.get(),
-                queue.size(), startedAt, lastActivityAt, lastError);
+        return new AgentStatus(id, pid, parentPid, namespace.id(), depth, name, template.id(), state.get(),
+                session.id(), workspace, turnCount.get(), stepTotal.get(), toolCallTotal.get(),
+                (int) promptTokens.get(), (int) completionTokens.get(), queue.size(), startedAt,
+                lastActivityAt, lastError);
     }
 
     @Override
@@ -340,6 +445,23 @@ public final class AgentImpl implements Agent {
      */
     void markStopped(String reason) {
         initiateStop(reason);
+    }
+
+    /**
+     * Remove grants revoked by the supervisor. The next tool call re-reads the set, so revocation
+     * takes effect without restarting the agent.
+     *
+     * @param capIds the grant ids to drop
+     */
+    void revokeCaps(Set<String> capIds) {
+        capabilities.updateAndGet(set -> {
+            CapabilitySet next = set;
+            for (String capId : capIds) {
+                next = next.without(capId);
+            }
+            return next;
+        });
+        log.info("revoked {} capability grant(s); {} remain", capIds.size(), capabilities.get().size());
     }
 
     private void initiateStop(String reason) {
@@ -404,6 +526,21 @@ public final class AgentImpl implements Agent {
         ctx.closeHooks();
         emit(HookPoint.AGENT_STOPPED, AgentEvent.of(this, stopReason));
         emit(HookPoint.SESSION_ENDED, new SessionEvent(this, session));
+        ExitKind kind = state.get() == AgentState.FAILED ? ExitKind.FAILED : exitKind(stopReason);
+        exit.complete(new ExitStatus(kind, stopReason));
+        supervisor.agentTerminated(this, stopReason);
+    }
+
+    private static ExitKind exitKind(String reason) {
+        String value = reason == null ? "" : reason.toLowerCase();
+        if (value.contains("fail")) {
+            return ExitKind.FAILED;
+        }
+        if (value.contains("kill") || value.contains("stop") || value.contains("shutdown")
+                || value.contains("parent")) {
+            return ExitKind.KILLED;
+        }
+        return ExitKind.NORMAL;
     }
 
     // ------------------------------------------------------------- turn loop
@@ -459,6 +596,13 @@ public final class AgentImpl implements Agent {
                     saveTurnQuietly(turn);
                     break;
                 }
+                String budgetStop = budgetStopReason();
+                if (budgetStop != null) {
+                    turn.finish(TurnState.FAILED, lastText, budgetStop);
+                    saveTurnQuietly(turn);
+                    lastError = budgetStop;
+                    break;
+                }
                 if (!awaitIfPaused()) {
                     String reason = pendingCancelReason();
                     turn.finish(TurnState.CANCELLED, lastText, reason == null ? "cancelled" : reason);
@@ -478,7 +622,7 @@ public final class AgentImpl implements Agent {
                 }
                 Double temperature = template.temperature() != null
                         ? template.temperature()
-                        : Double.valueOf(runtime.config().temperature());
+                        : Double.valueOf(modelTemperature());
 
                 RequestEvent event = new RequestEvent(this, session, turn, step, system, messages, tools,
                         model, maxTokens, temperature);
@@ -518,6 +662,7 @@ public final class AgentImpl implements Agent {
                     appendMessage(assistant);
                 }
                 Usage usage = response.usage();
+                budget.updateAndGet(b -> b.consumeTokens(usage.total()));
                 int toolCallCount = assistant == null ? 0 : assistant.toolCalls().size();
                 turn.addStep(new Step(step, stepStart, Instant.now(), response.finishReason(),
                         usage.promptTokens(), usage.completionTokens(), toolCallCount));
@@ -566,13 +711,34 @@ public final class AgentImpl implements Agent {
             touch();
             if (sessionDirty) {
                 try {
-                    runtime.sessions().update(session);
+                    namespace.store().update(session);
                 } catch (Throwable t) {
                     log.warn("could not persist session metadata", t);
                 }
             }
             sub.future().complete(buildResult(turn, turnStart));
         }
+    }
+
+    /** @return why the turn should stop on budget grounds, or {@code null}. */
+    private String budgetStopReason() {
+        Budget current = budget.get();
+        if (current.expired()) {
+            return "budget exhausted: deadline " + current.deadline() + " passed";
+        }
+        if (!current.hasTokens()) {
+            return "budget exhausted: no tokens left (used " + promptTokens.get() + "+"
+                    + completionTokens.get() + ")";
+        }
+        return null;
+    }
+
+    /** @return the model profile temperature, falling back to the runtime default. */
+    private double modelTemperature() {
+        ModelProfile profile = namespace.metadata().profile(manifest.modelProfileId());
+        return profile == null
+                ? runtime.config().temperature()
+                : profile.doubleParam("temperature", runtime.config().temperature());
     }
 
     private TurnResult buildResult(Turn turn, long turnStartNanos) {
@@ -621,18 +787,28 @@ public final class AgentImpl implements Agent {
         } else if (tool == null) {
             outcome = ToolOutcome.error("unknown tool \"" + call.name() + "\"");
         } else {
-            try {
-                ToolContext toolContext = toolContextFactory.create(this,
-                        () -> turnCancel || stopFlag, this::currentCancelReason);
-                outcome = tool.invoke(before.invocation(), toolContext);
-                if (outcome == null) {
-                    outcome = ToolOutcome.error("tool returned no outcome");
+            String denied = capabilityDenial(tool);
+            if (denied == null) {
+                denied = budgetToolDenial();
+            }
+            if (denied != null) {
+                outcome = ToolOutcome.denied(denied);
+            } else {
+                try {
+                    budget.updateAndGet(Budget::consumeToolSlot);
+                    toolCallTotal.incrementAndGet();
+                    ToolContext toolContext = toolContextFactory.create(this,
+                            () -> turnCancel || stopFlag, this::currentCancelReason);
+                    outcome = tool.invoke(before.invocation(), toolContext);
+                    if (outcome == null) {
+                        outcome = ToolOutcome.error("tool returned no outcome");
+                    }
+                } catch (ToolException e) {
+                    outcome = ToolOutcome.error(e.getMessage());
+                } catch (Exception e) {
+                    log.warn("tool \"{}\" failed", call.name(), e);
+                    outcome = ToolOutcome.error("tool failed: " + e.getMessage());
                 }
-            } catch (ToolException e) {
-                outcome = ToolOutcome.error(e.getMessage());
-            } catch (Exception e) {
-                log.warn("tool \"{}\" failed", call.name(), e);
-                outcome = ToolOutcome.error("tool failed: " + e.getMessage());
             }
         }
         outcome = truncate(outcome);
@@ -645,6 +821,30 @@ public final class AgentImpl implements Agent {
         appendMessage(Message.toolResult(call.callId(), call.name(), finalOutcome.ok(),
                 finalOutcome.modelText()));
         touch();
+    }
+
+    /** @return a denial reason when the agent lacks a capability the tool needs, else {@code null}. */
+    private String capabilityDenial(Tool tool) {
+        Set<CapKind> required = tool.requiredCaps();
+        if (required.isEmpty()) {
+            return null;
+        }
+        CapabilitySet held = capabilities.get();
+        for (CapKind kind : required) {
+            if (!held.containsKind(kind)) {
+                return "capability denied: tool \"" + tool.name() + "\" requires " + kind.id();
+            }
+        }
+        return null;
+    }
+
+    /** @return a denial reason when the budget forbids another tool call, else {@code null}. */
+    private String budgetToolDenial() {
+        Budget current = budget.get();
+        if (current.toolSlots() == 0) {
+            return "budget exhausted: no tool slots left";
+        }
+        return current.expired() ? "budget exhausted: deadline passed" : null;
     }
 
     private ToolOutcome truncate(ToolOutcome outcome) {
