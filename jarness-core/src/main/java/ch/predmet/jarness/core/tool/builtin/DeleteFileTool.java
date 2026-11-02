@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -30,6 +31,7 @@ public final class DeleteFileTool implements Tool {
     @Override
     public ToolOutcome invoke(ToolInvocation invocation, ToolContext ctx) {
         Path target = ctx.resolve(invocation.requireString("file_path"), true);
+        ctx.requireResource(CapKind.FS_WRITE, target.toString());
         try {
             if (!Files.exists(target)) {
                 throw new ToolException("no such file: " + target);

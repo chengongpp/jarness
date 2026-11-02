@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -46,7 +47,7 @@ public final class WriteFileTool implements Tool {
         try {
             String path = invocation.requireString("file_path");
             String content = invocation.requireString("content");
-            Path resolved = ctx.resolve(path, true);
+            Path resolved = ctx.resolveScoped(path, CapKind.FS_WRITE, true);
             Path parent = resolved.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);

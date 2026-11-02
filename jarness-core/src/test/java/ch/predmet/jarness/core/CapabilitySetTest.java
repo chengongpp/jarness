@@ -21,6 +21,8 @@ class CapabilitySetTest {
     void resourceScopesAreContainedNarrowly() {
         assertTrue(Capability.coversResource("*", "/anything"));
         assertTrue(Capability.coversResource("/data/*", "/data/team/file.txt"));
+        assertTrue(Capability.coversResource("/data/*", "/data"),
+                "a directory wildcard also covers its root for glob/grep");
         assertFalse(Capability.coversResource("/data/*", "/etc/passwd"));
         assertFalse(Capability.coversResource("/data/*", "/data-secret"),
                 "a path wildcard must end at a path-component boundary");

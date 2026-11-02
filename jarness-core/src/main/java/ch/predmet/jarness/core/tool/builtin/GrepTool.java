@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -69,8 +70,8 @@ public final class GrepTool implements Tool {
                 throw new ToolException("invalid regular expression: " + e.getMessage());
             }
             Path root = invocation.findString("path")
-                    .map(p -> ctx.resolve(p, false))
-                    .orElse(ctx.workspace());
+                    .map(p -> ctx.resolveScoped(p, CapKind.FS_READ, false))
+                    .orElseGet(() -> ctx.resolveScoped(".", CapKind.FS_READ, false));
             if (!Files.exists(root)) {
                 throw new ToolException("search path does not exist: " + root);
             }
@@ -93,6 +94,11 @@ public final class GrepTool implements Tool {
             int filesWithMatches = 0;
             boolean truncated = false;
             for (Path file : files) {
+                try {
+                    file = ctx.resolveScoped(file.toString(), CapKind.FS_READ, false);
+                } catch (ToolException denied) {
+                    continue;
+                }
                 if (include != null && !include.matches(file.getFileName())) {
                     continue;
                 }

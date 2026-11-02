@@ -78,8 +78,8 @@ public record Capability(String capId, CapKind kind, String resource, Constraint
             return true;
         }
         if (grantResource.endsWith("/*")) {
-            String prefix = grantResource.substring(0, grantResource.length() - 1);
-            return requestedResource.startsWith(prefix);
+            String root = grantResource.substring(0, grantResource.length() - 2);
+            return requestedResource.equals(root) || requestedResource.startsWith(root + "/");
         }
         if (grantResource.startsWith("*.")) {
             String domain = grantResource.substring(1);

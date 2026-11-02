@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -62,8 +63,8 @@ public final class GlobTool implements Tool {
                 throw new ToolException("invalid glob pattern: " + e.getMessage());
             }
             Path root = invocation.findString("path")
-                    .map(p -> ctx.resolve(p, false))
-                    .orElse(ctx.workspace());
+                    .map(p -> ctx.resolveScoped(p, CapKind.FS_READ, false))
+                    .orElseGet(() -> ctx.resolveScoped(".", CapKind.FS_READ, false));
             if (!Files.isDirectory(root)) {
                 throw new ToolException("search root is not a directory: " + root);
             }
@@ -71,6 +72,11 @@ public final class GlobTool implements Tool {
             List<Path> matches = new ArrayList<>();
             try (Stream<Path> walk = Files.walk(root)) {
                 walk.filter(Files::isRegularFile).forEach(file -> {
+                    try {
+                        ctx.resolveScoped(file.toString(), CapKind.FS_READ, false);
+                    } catch (ToolException denied) {
+                        return;
+                    }
                     Path relative = root.relativize(file);
                     if (matcher.matches(relative)
                             || (basenameOnly && matcher.matches(file.getFileName()))) {

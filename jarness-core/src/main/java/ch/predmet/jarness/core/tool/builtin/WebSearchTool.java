@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -48,7 +49,7 @@ public final class WebSearchTool implements Tool {
             params());
 
     private final HttpClient client = HttpClient.newBuilder()
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(15))
             .build();
 
@@ -86,7 +87,7 @@ public final class WebSearchTool implements Tool {
                     out.append('\n');
                 }
                 out.append("== ").append(query).append(" ==\n");
-                List<Result> results = search(query);
+                List<Result> results = search(query, ctx);
                 if (results.isEmpty()) {
                     out.append("(no results)\n");
                     continue;
@@ -112,9 +113,10 @@ public final class WebSearchTool implements Tool {
         }
     }
 
-    private List<Result> search(String query) throws Exception {
+    private List<Result> search(String query, ToolContext ctx) throws Exception {
         String url = "https://lite.duckduckgo.com/lite/?q="
                 + URLEncoder.encode(query, StandardCharsets.UTF_8);
+        ctx.requireResource(CapKind.NET, "lite.duckduckgo.com");
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(30))
                 .header("User-Agent", USER_AGENT)

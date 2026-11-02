@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -33,7 +34,7 @@ public final class WebFetchTool implements Tool {
             params());
 
     private final HttpClient client = HttpClient.newBuilder()
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(15))
             .build();
 
@@ -62,16 +63,30 @@ public final class WebFetchTool implements Tool {
             } catch (IllegalArgumentException e) {
                 throw new ToolException("invalid URL: " + url);
             }
-            String scheme = uri.getScheme();
-            if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
-                throw new ToolException("only http(s) URLs can be fetched: " + url);
+            HttpResponse<String> response;
+            int redirects = 0;
+            while (true) {
+                String scheme = uri.getScheme();
+                if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                    throw new ToolException("only http(s) URLs can be fetched: " + uri);
+                }
+                ctx.requireResource(CapKind.NET, uri.getHost());
+                HttpRequest request = HttpRequest.newBuilder(uri)
+                        .timeout(Duration.ofSeconds(30))
+                        .header("User-Agent", USER_AGENT)
+                        .GET()
+                        .build();
+                response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                if (!java.util.Set.of(301, 302, 303, 307, 308).contains(response.statusCode())) {
+                    break;
+                }
+                if (++redirects > 5) {
+                    throw new ToolException("too many redirects fetching " + url);
+                }
+                String location = response.headers().firstValue("Location")
+                        .orElseThrow(() -> new ToolException("redirect has no Location header"));
+                uri = uri.resolve(location);
             }
-            HttpRequest request = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(30))
-                    .header("User-Agent", USER_AGENT)
-                    .GET()
-                    .build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 400) {
                 return ToolOutcome.error("HTTP " + response.statusCode() + " fetching " + url);
             }

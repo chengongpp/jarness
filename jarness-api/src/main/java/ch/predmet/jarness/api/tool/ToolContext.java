@@ -2,6 +2,8 @@ package ch.predmet.jarness.api.tool;
 
 import ch.predmet.jarness.api.JarnessRuntime;
 import ch.predmet.jarness.api.agent.Agent;
+import ch.predmet.jarness.api.capability.CapKind;
+import ch.predmet.jarness.api.capability.Capability;
 import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.ConfigView;
 import ch.predmet.jarness.api.exec.ExecutionRegistry;
@@ -11,6 +13,7 @@ import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.session.Session;
 import org.slf4j.Logger;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
@@ -102,5 +105,47 @@ public interface ToolContext {
             }
             default -> throw new ToolException("unhandled sandbox mode " + sandbox());
         }
+    }
+
+    /** Require a capability over one concrete resource, independent of its token/deadline limits. */
+    default void requireResource(CapKind kind, String resource) {
+        for (Capability capability : capabilities().select(kind)) {
+            if (Capability.coversResource(capability.resource(), resource)) {
+                return;
+            }
+        }
+        throw new ToolException("capability denied: " + kind.id() + " does not grant " + resource);
+    }
+
+    /**
+     * Resolve a LOCAL filesystem operation and enforce its resource scope. Existing paths and the
+     * nearest existing parent of a new path are resolved to real paths first, so ordinary symlink
+     * escapes are rejected. The executor remains the strong, race-resistant isolation boundary.
+     *
+     * @param path   absolute or cwd-relative path
+     * @param kind   filesystem capability kind
+     * @param intent whether the caller intends to write
+     * @return the resolved real/target path
+     */
+    default Path resolveScoped(String path, CapKind kind, boolean intent) {
+        Path requested = resolve(path, intent);
+        Path effective = requested;
+        try {
+            if (Files.exists(requested) || Files.isSymbolicLink(requested)) {
+                effective = requested.toRealPath();
+            } else if (requested.getParent() != null) {
+                Path existing = requested.getParent();
+                while (existing != null && !Files.exists(existing)) {
+                    existing = existing.getParent();
+                }
+                if (existing != null) {
+                    effective = existing.toRealPath().resolve(existing.relativize(requested)).normalize();
+                }
+            }
+        } catch (java.io.IOException e) {
+            throw new ToolException("cannot resolve " + requested + ": " + e.getMessage());
+        }
+        requireResource(kind, effective.toString());
+        return effective;
     }
 }

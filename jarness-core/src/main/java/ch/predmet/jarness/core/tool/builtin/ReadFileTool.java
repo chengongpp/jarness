@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -53,7 +54,7 @@ public final class ReadFileTool implements Tool {
             if (limit < 0) {
                 limit = DEFAULT_LIMIT;
             }
-            Path resolved = ctx.resolve(path, false);
+            Path resolved = ctx.resolveScoped(path, CapKind.FS_READ, false);
             if (!Files.exists(resolved)) {
                 throw new ToolException("file does not exist: " + path);
             }

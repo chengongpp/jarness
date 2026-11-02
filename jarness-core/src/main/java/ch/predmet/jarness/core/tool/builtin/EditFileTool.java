@@ -1,5 +1,6 @@
 package ch.predmet.jarness.core.tool.builtin;
 
+import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
@@ -53,7 +54,7 @@ public final class EditFileTool implements Tool {
                 throw new ToolException("missing required parameter \"new_string\"");
             }
             boolean replaceAll = invocation.bool("replace_all", false);
-            Path resolved = ctx.resolve(path, true);
+            Path resolved = ctx.resolveScoped(path, CapKind.FS_WRITE, true);
             if (!Files.exists(resolved)) {
                 throw new ToolException("file does not exist: " + path);
             }
