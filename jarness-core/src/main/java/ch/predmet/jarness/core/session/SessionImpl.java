@@ -195,14 +195,18 @@ public class SessionImpl implements Session {
     public void rename(String title) {
         this.title = title == null ? "" : title;
         touch();
-        store.update(this);
+        if (activeTurn == null) {
+            store.update(this);
+        }
     }
 
     @Override
     public void setModel(ModelRef model) {
         this.model = model;
         touch();
-        store.update(this);
+        if (activeTurn == null) {
+            store.update(this);
+        }
     }
 
     private void touch() {

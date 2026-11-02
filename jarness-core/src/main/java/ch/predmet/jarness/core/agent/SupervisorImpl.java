@@ -793,14 +793,18 @@ public final class SupervisorImpl implements Supervisor {
 
     @Override
     public ImageRef suspend(long pid) {
-        ImageRef ref = checkpoint(pid);
         Agent agent = requireAgent(pid);
         if (agent instanceof AgentImpl impl) {
+            // Stop first so the checkpoint includes the final cancelled/committed turn and never
+            // combines an old history snapshot with metadata from an in-flight turn.
             impl.markSuspended("suspended");
+            if (impl.awaitExit(Duration.ofSeconds(5)).isEmpty()) {
+                throw new IllegalStateException("agent " + pid + " did not exit within the suspend timeout");
+            }
         } else {
             agent.stop("suspended");
         }
-        return ref;
+        return checkpoint(pid);
     }
 
     @Override
@@ -810,6 +814,11 @@ public final class SupervisorImpl implements Supervisor {
         ImageMetadata metadata = namespace.store().image(image.sessionId()).orElseThrow(() ->
                 new IllegalArgumentException("no image for session " + image.sessionId()
                         + " in namespace " + image.namespaceId()));
+        if (image.checkpointTurn() >= 0 && metadata.checkpointTurn() != image.checkpointTurn()) {
+            throw new IllegalArgumentException("image reference " + image.sessionId() + " points to checkpoint "
+                    + image.checkpointTurn() + ", but the latest is " + metadata.checkpointTurn()
+                    + "; point-in-time resume is not implemented");
+        }
         String templateId = namespace.defaultTemplateId();
         Object template = metadata.deps().get("template");
         if (template instanceof Map<?, ?> map) {

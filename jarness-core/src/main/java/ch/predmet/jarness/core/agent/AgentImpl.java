@@ -651,8 +651,13 @@ public final class AgentImpl implements Agent {
      * Checkpoint this agent's image: snapshot the session and compact the covered turn deltas.
      */
     void checkpoint() {
-        namespace.store().checkpoint(session, imageMetadata());
-        log.info("checkpointed image of {} at turn {}", id, session.nextTurnIndex() - 1);
+        if (Thread.currentThread() == worker && busy) {
+            throw new IllegalStateException("cannot checkpoint from inside a running turn");
+        }
+        synchronized (this) {
+            namespace.store().checkpoint(session, imageMetadata());
+            log.info("checkpointed image of {} at turn {}", id, session.nextTurnIndex() - 1);
+        }
     }
 
     private void initiateStop(String reason) {
@@ -770,7 +775,7 @@ public final class AgentImpl implements Agent {
 
     // ------------------------------------------------------------- turn loop
 
-    private void runTurn(Submitted sub) {
+    private synchronized void runTurn(Submitted sub) {
         AgentState current = state.get();
         if (current == AgentState.STOPPED || current == AgentState.FAILED) {
             sub.future().completeExceptionally(
@@ -785,7 +790,6 @@ public final class AgentImpl implements Agent {
         touch();
         Turn turn = null;
         long turnStart = System.nanoTime();
-        boolean sessionDirty = false;
         try {
             String inputText = sub.message().text();
             turn = session.startTurn(inputText);
@@ -794,7 +798,6 @@ public final class AgentImpl implements Agent {
             turnCount.incrementAndGet();
             if (!titleKnown && turn.index() == 0) {
                 session.rename(inputText.length() <= 60 ? inputText : inputText.substring(0, 60));
-                sessionDirty = true;
             }
             titleKnown = true;
 
@@ -804,12 +807,11 @@ public final class AgentImpl implements Agent {
             } catch (RuntimeException e) {
                 lastError = e.getMessage();
                 turn.finish(TurnState.FAILED, "", e.getMessage());
-                commitTurnQuietly(turn);
+                commitTurn(turn);
                 return;
             }
             if (!model.equals(session.model())) {
                 session.setModel(model);
-                sessionDirty = true;
             }
 
             emit(HookPoint.TURN_START, TurnEvent.of(this, session, turn));
@@ -822,20 +824,20 @@ public final class AgentImpl implements Agent {
                 String cancel = pendingCancelReason();
                 if (cancel != null) {
                     turn.finish(TurnState.CANCELLED, lastText, cancel);
-                    commitTurnQuietly(turn);
+                    commitTurn(turn);
                     break;
                 }
                 String budgetStop = budgetStopReason();
                 if (budgetStop != null) {
                     turn.finish(TurnState.FAILED, lastText, budgetStop);
-                    commitTurnQuietly(turn);
+                    commitTurn(turn);
                     lastError = budgetStop;
                     break;
                 }
                 if (!awaitIfPaused()) {
                     String reason = pendingCancelReason();
                     turn.finish(TurnState.CANCELLED, lastText, reason == null ? "cancelled" : reason);
-                    commitTurnQuietly(turn);
+                    commitTurn(turn);
                     break;
                 }
 
@@ -869,7 +871,7 @@ public final class AgentImpl implements Agent {
                             : reqCtx.cancelReason();
                     turn.addStep(new Step(step, stepStart, Instant.now(), "cancelled", 0, 0, 0));
                     turn.finish(TurnState.FAILED, "", reason);
-                    commitTurnQuietly(turn);
+                    commitTurn(turn);
                     lastError = reason;
                     break;
                 }
@@ -884,7 +886,7 @@ public final class AgentImpl implements Agent {
                     log.warn("provider call failed: {}", e.getMessage());
                     turn.addStep(new Step(step, stepStart, Instant.now(), "error", 0, 0, 0));
                     turn.finish(TurnState.FAILED, "", e.getMessage());
-                    commitTurnQuietly(turn);
+                    commitTurn(turn);
                     lastError = e.getMessage();
                     break;
                 }
@@ -907,7 +909,7 @@ public final class AgentImpl implements Agent {
                 stepTotal.incrementAndGet();
                 promptTokens.addAndGet(usage.promptTokens());
                 completionTokens.addAndGet(usage.completionTokens());
-                commitTurnQuietly(turn);
+                commitTurn(turn);
                 lastText = response.text();
                 touch();
 
@@ -918,23 +920,38 @@ public final class AgentImpl implements Agent {
                     continue;
                 }
                 turn.finish(TurnState.COMPLETED, response.text(), null);
-                commitTurnQuietly(turn);
+                commitTurn(turn);
                 break;
             }
 
             if (turn.state() == TurnState.RUNNING) {
                 turn.finish(TurnState.MAX_STEPS, lastText, "step budget exhausted");
-                commitTurnQuietly(turn);
+                commitTurn(turn);
             }
         } catch (Throwable t) {
             log.error("turn failed unexpectedly", t);
-            lastError = String.valueOf(t.getMessage());
-            if (turn != null && turn.state() == TurnState.RUNNING) {
-                try {
-                    turn.finish(TurnState.FAILED, "", String.valueOf(t.getMessage()));
-                    commitTurnQuietly(turn);
-                } catch (Throwable ignored) {
-                    // the session store is failing; the future still completes below
+            String failure = String.valueOf(t.getMessage());
+            lastError = failure;
+            if (t instanceof CommitException) {
+                // The in-memory session may contain messages that never became durable. Stop this
+                // writer instead of letting a later turn accidentally carry them into another commit.
+                stopReason = failure;
+                stopFlag = true;
+                state.set(AgentState.FAILED);
+            }
+            if (turn != null) {
+                boolean wasRunning = turn.state() == TurnState.RUNNING;
+                turn.finish(TurnState.FAILED, turn.output(), failure);
+                if (wasRunning) {
+                    try {
+                        commitTurn(turn);
+                    } catch (Throwable commitFailure) {
+                        lastError = String.valueOf(commitFailure.getMessage());
+                        turn.finish(TurnState.FAILED, turn.output(), lastError);
+                        stopReason = lastError;
+                        stopFlag = true;
+                        state.set(AgentState.FAILED);
+                    }
                 }
             }
         } finally {
@@ -949,14 +966,6 @@ public final class AgentImpl implements Agent {
                 state.set(AgentState.IDLE);
             }
             touch();
-            commitTurnQuietly(turn);
-            if (sessionDirty) {
-                try {
-                    namespace.store().update(session);
-                } catch (Throwable t) {
-                    log.warn("could not persist session metadata", t);
-                }
-            }
             sub.future().complete(buildResult(turn, turnStart));
         }
     }
@@ -1402,22 +1411,32 @@ public final class AgentImpl implements Agent {
      *
      * @param turn the turn
      */
-    private void commitTurnQuietly(Turn turn) {
-        if (turn == null || turn.state() == TurnState.RUNNING) {
-            return;
-        }
-        if (!committedTurns.add(turn.id())) {
+    private void commitTurn(Turn turn) {
+        if (turn == null || turn.state() == TurnState.RUNNING || committedTurns.contains(turn.id())) {
             return;
         }
         try {
             session.commitTurn(turn, imageMetadata());
-            int every = runtime.config().raw().integer("session.checkpoint_every", 0);
-            if (every > 0 && turn.index() > 0 && turn.index() % every == 0) {
-                namespace.store().checkpoint(session, imageMetadata());
-            }
         } catch (Throwable t) {
-            committedTurns.remove(turn.id());
-            log.warn("could not commit turn {}", turn.id(), t);
+            throw new CommitException("could not commit turn " + turn.id() + " for session "
+                    + session.id() + ": " + t.getMessage(), t);
+        }
+        committedTurns.add(turn.id());
+        int every = runtime.config().raw().integer("session.checkpoint_every", 0);
+        if (every > 0 && turn.index() > 0 && turn.index() % every == 0) {
+            try {
+                namespace.store().checkpoint(session, imageMetadata());
+            } catch (Throwable t) {
+                throw new CommitException("turn " + turn.id() + " committed, but its checkpoint failed: "
+                        + t.getMessage(), t);
+            }
+        }
+    }
+
+    /** Fatal for the current writer: continuing could mix undurable in-memory messages with a later turn. */
+    private static final class CommitException extends RuntimeException {
+        private CommitException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 

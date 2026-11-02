@@ -288,24 +288,26 @@ public class LocalSessionStore implements SessionStore {
                 for (TurnDeltaRow row : turnRows(sessionId, checkpointSeq)) {
                     ImageCodec.TurnDelta delta = ImageCodec.readTurn(sessionId, row.delta());
                     if (delta == null) {
-                        LOG.warn("undecodable turn {} in session {}; skipping", row.seq(), sessionId);
-                        continue;
+                        throw new IllegalStateException("undecodable committed turn " + row.seq()
+                                + " in session " + sessionId);
                     }
                     turns.add(delta.turn());
                     messages.addAll(delta.messages());
                 }
                 return new History(messages, turns);
             }
-            LOG.warn("checkpoint {} of session {} is unreadable; falling back to the delta log",
-                    checkpointSeq, sessionId);
+            throw new IllegalStateException("latest checkpoint " + checkpointSeq + " of session " + sessionId
+                    + " is unreadable; refusing to load a truncated image");
         }
         List<Message> messages = loadMessages(sessionId);
         List<TurnImpl> turns = new ArrayList<>();
         for (TurnDeltaRow row : turnRows(sessionId, -1)) {
             ImageCodec.TurnDelta delta = ImageCodec.readTurn(sessionId, row.delta());
-            if (delta != null) {
-                turns.add(delta.turn());
+            if (delta == null) {
+                throw new IllegalStateException("undecodable committed turn " + row.seq()
+                        + " in session " + sessionId);
             }
+            turns.add(delta.turn());
         }
         return new History(messages, turns);
     }
@@ -722,19 +724,32 @@ public class LocalSessionStore implements SessionStore {
                 + " FROM sessions s" + where;
     }
 
-    private static List<SessionSummary> readSummaries(PreparedStatement ps) throws SQLException {
+    private List<SessionSummary> readSummaries(PreparedStatement ps) throws SQLException {
         List<SessionSummary> summaries = new ArrayList<>();
         try (ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
+                String sessionId = rs.getString("id");
+                int messageCount = rs.getInt("message_count");
+                int turnCount = rs.getInt("turn_count");
+                Integer checkpointSeq = latestCheckpointSeq(sessionId);
+                if (checkpointSeq != null) {
+                    ImageCodec.Snapshot snapshot = readCheckpoint(sessionId, checkpointSeq);
+                    if (snapshot == null) {
+                        throw new IllegalStateException("checkpoint " + checkpointSeq + " of session "
+                                + sessionId + " is unreadable");
+                    }
+                    messageCount += snapshot.messages().size();
+                    turnCount += snapshot.turns().size();
+                }
                 summaries.add(new SessionSummary(
-                        rs.getString("id"),
+                        sessionId,
                         rs.getString("agent_id"),
                         rs.getString("title"),
                         rs.getString("template_id"),
                         Instant.ofEpochMilli(rs.getLong("created_at")),
                         Instant.ofEpochMilli(rs.getLong("updated_at")),
-                        rs.getInt("message_count"),
-                        rs.getInt("turn_count")));
+                        messageCount,
+                        turnCount));
             }
         }
         return summaries;

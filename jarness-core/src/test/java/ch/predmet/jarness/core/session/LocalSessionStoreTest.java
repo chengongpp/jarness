@@ -27,6 +27,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -120,6 +121,9 @@ class LocalSessionStoreTest {
             Session resumed = store.load(sessionId).orElseThrow();
             assertEquals(4, resumed.messages().size());
             assertEquals(2, resumed.turns().size());
+            var summary = store.list(10).get(0);
+            assertEquals(4, summary.messageCount(), "checkpoint compaction must not shrink logical counts");
+            assertEquals(2, summary.turnCount());
 
             Turn third = resumed.startTurn("q2");
             resumed.append(Message.user("q2"));
@@ -193,6 +197,25 @@ class LocalSessionStoreTest {
             assertFalse(events.isEmpty());
             assertTrue(events.stream().anyMatch(e -> e.type().equals("turn.committed")));
             assertTrue(events.stream().anyMatch(e -> e.type().equals("message.appended")));
+        }
+    }
+
+    @Test
+    void corruptCheckpointIsNotSilentlyLoadedAsPartialHistory() throws Exception {
+        try (LocalSessionStore store = new LocalSessionStore(url())) {
+            Session session = session(store);
+            Turn turn = session.startTurn("hello");
+            session.append(Message.user("hello"));
+            turn.finish(TurnState.COMPLETED, "done", null);
+            session.commitTurn(turn, null);
+            store.checkpoint(session, null);
+            try (Connection connection = DriverManager.getConnection(url());
+                 Statement statement = connection.createStatement()) {
+                statement.executeUpdate("UPDATE checkpoints SET image = 'not-json'");
+            }
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> store.load(session.id()));
+            assertTrue(failure.getMessage().contains("refusing to load"), failure.getMessage());
         }
     }
 
