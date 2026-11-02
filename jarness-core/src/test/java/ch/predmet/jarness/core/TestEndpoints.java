@@ -1,8 +1,11 @@
 package ch.predmet.jarness.core;
 
+import ch.predmet.jarness.api.config.JarnessLayout;
 import ch.predmet.jarness.api.provider.ModelInfo;
 import ch.predmet.jarness.api.provider.ProviderKind;
 import ch.predmet.jarness.api.provider.ProviderProfile;
+import ch.predmet.jarness.core.config.ConfigLoader;
+import ch.predmet.jarness.core.provider.ProfileLoader;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -14,8 +17,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Test support: parses {@code tmp/endpoint.txt} (a JSON-ish fragment with a trailing comma)
- * into a {@link ProviderProfile}.
+ * Test support: resolves the live endpoint from the installed runtime's {@code providers.toml},
+ * falling back to {@code tmp/endpoint.txt} (a JSON-ish fragment with a trailing comma) for
+ * standalone checkouts.
  */
 public final class TestEndpoints {
 
@@ -23,11 +27,23 @@ public final class TestEndpoints {
     }
 
     /**
-     * Parse the endpoint fragment at {@code tmp/endpoint.txt} relative to the project root.
+     * Resolve the live endpoint, preferring the installed runtime's {@code providers.toml} so tests
+     * follow the same endpoint the daemon uses. Falls back to {@code tmp/endpoint.txt}.
      *
-     * @return the first profile described by the file
+     * @return the profile to test against
      */
     public static ProviderProfile gb10() {
+        JarnessLayout installed = JarnessLayout.defaultLayout();
+        if (Files.isRegularFile(installed.providersFile())) {
+            List<ProviderProfile> profiles = ProfileLoader.load(installed.providersFile());
+            if (!profiles.isEmpty()) {
+                String preferred = ConfigLoader.load(installed).defaultProvider();
+                return profiles.stream()
+                        .filter(profile -> profile.id().equals(preferred))
+                        .findFirst()
+                        .orElse(profiles.get(0));
+            }
+        }
         Path file = Path.of(System.getProperty("jarness.endpointFile", "tmp/endpoint.txt"));
         if (!Files.isRegularFile(file)) {
             // surefire runs with the module dir as working directory; the file lives at the root

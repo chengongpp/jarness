@@ -43,14 +43,17 @@ P0 仍不实现审批，但已经把 `PolicySet` 放进 namespace metadata 作�
 是可变对象，钩子就地改写；ToolRegistry/AgentTemplateRegistry/ProviderRegistry 运行时可写——
 这正是 Full 模板"运行时手搓 template、动态加 mod"场景的基础。
 
-## 5. base dir 与 agent workspace 严格分离
+## 5. base dir 与 namespace cwd 严格分离
 
 base dir（默认 `$HOME/.local/share/jarness`）只放 `mods/`、`config/`、`presets/`、`data/jarness.db`、
-`workspaces/`。每个 agent 的 workspace 默认是 `<base>/workspaces/agents/agent-<pid>` 下的新目录，
-也可以由创建方显式指定，但永远不等于 base dir。工具的相对路径一律相对 agent workspace 解析。
+`workspaces/`。工具的相对路径一律相对 **namespace cwd** 解析，而不是 base dir。
 
-**[v1.3 补充]** pid 由 supervisor 分配，workspace 目录名随之从随机 id 改为稳定的 `agent-<pid>`；
-子 agent（`subagent` / `agent_spawn`）仍默认落在父 workspace 的 `subagents/` 下。
+**[v1.4 取代]** 不再有 per-agent workspace：同一 namespace 的所有 agent（包括 `subagent` /
+`agent_spawn` 创建的子 agent）统一使用 `NamespaceMetadata.cwd()`。默认 namespace 的 cwd 是
+`<workspace_root>/default`，额外 namespace 是 `<workspace_root>/<id>`，也可以由
+`[defaults] cwd` / `[namespaces.<id>] cwd` 显式指定（相对路径相对 base dir）。这样同一 namespace
+内的文件副作用天然共享，和 v1.3 把 namespace 视为执行环境的模型一致。旧的 `AgentRequest.workspace`
+与 CLI `-w` 已删除；resume 时会把 session 记录的 workspace 重绑到当前 namespace cwd。
 
 ## 6. Supervisor 最先起、最后退
 
@@ -178,8 +181,10 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 - **异步结果用 user 消息开新 turn**：执行器返回时原来的 turn 已经 commit，直接塞 tool_result 会形成
   「无 assistant tool_call 的孤儿结果」；用一条带 `# Async tool result` 的 user 消息最稳，provider
   不用改消息协议。代价是模型看到的是叙述而非结构化 tool 消息。
-- **IPC 是进程内对象，不是 JSON 协议**：`Blackboard`/`Channel` 直接是 Java 接口；句柄即能力
-  （创建要 `ipc`），owner 退出 `closeOwned`。跨 daemon 明确不做。
+- **IPC 是进程内对象，不是 JSON 协议**：`Shm`/`Channel` 直接是 Java 接口；shm 的 cell 以内存读路径
+  加 SQLite 写穿持久化，`shm` / `agent_send` 工具显式声明 `ToolForm.LOCAL`，不会下发 executor。
+  shm 按 namespace 命名空间隔离，creator 退出不会清空共享状态；channel 仍是 owner-bound 句柄。
+  跨 daemon 明确不做。
 - **super agent 惰性创建**：设计说启动 profile 默认 1 个；但每次 `jarness mods`/`sessions` 都建一个
   会话不划算。实现改为「第一次 root spawn 或 `jarness super` 时创建」，权限模型不变。
 - **平台工具的只读/写分级**：`ns_create/ns_remove/agent_kill/agent_signal` 是 mutating；普通 agent
@@ -234,3 +239,29 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
   标签、截断 20000 字符；`web_fetch` relay 时走它，`web_search` 暂时留在 daemon。
 - **rustls provider**：同时编进 ring 与 aws-lc-rs 时必须显式 `install_default`；executor 启动时
   安装 ring provider。
+
+
+## 23. v1.4：in-JVM IPC 与 namespace cwd（2026-11-02）
+
+用户明确了几处语义，按此修正实现；`docs/harness-design.md` 里的 “Blackboard” 一词在代码与 API 中
+统一称为 **Shm（Shared Memory）**。
+
+- **IPC 不再有 executor 路径**：`shm` 与 `agent_send` 都是 `ToolForm.LOCAL` 工具，直接调用
+  `runtime.ipc()` / `agent.mailbox()`，不经过 `ExecutionRegistry`。`IpcToolTest` 在
+  `execution.mode = "relay"` 且没有任何 execution provider 的运行时里验证了这一点。
+- **shm 是 namespace 级共享内存**：id 只在 namespace 内唯一；cell 先写 SQLite（`shm_boards` /
+  `shm_cells`，值以 JSON 保存）再更新内存，读路径走内存。daemon 重启后按 id 重新 attach 即可恢复。
+  shm 的 creator 退出不会删除共享状态（`closeOwned` 只回收 channel）；需要删除时用
+  `IpcRegistry.removeShm(namespace, id)`。
+- **mailbox 仍是直接投递**：`agent_send` 检查目标存在、同 namespace（或持有 `namespace`/`platform`
+  能力），然后 `target.deliver(MailboxMessage.data(...))`；目标 agent 的 worker 把它当作普通
+  `DATA` 消息开新 turn。没有 JSON 协议、没有 executor 跳转。
+- **一个 namespace 一个 cwd**：`NamespaceMetadata.cwd` 是唯一工作目录来源。`AgentImpl` 不再看
+  `AgentRequest.workspace`（字段已删），`SubagentTool` 不再创建 `subagents/<uuid>`；`bash` 的
+  默认目录、`read/write/glob/grep` 的相对路径、沙箱 `workspace-write` 边界都跟着 namespace cwd。
+- **配置**：默认 namespace 用 `[defaults] cwd`，额外 namespace 用 `[namespaces.<id>] cwd`；
+  缺省值分别是 `<base>/workspaces/default` 与 `<base>/workspaces/<id>`。`jarness namespaces`
+  和 `ns_list` 都会显示 cwd。
+- **live endpoint**：`TestEndpoints` 优先读取已安装的
+  `~/.local/share/jarness/config/providers.toml`（并用 `defaults.provider` 选 profile），
+  读不到才回退到 `tmp/endpoint.txt`；`make it` 因此跟随 daemon 当前端点。

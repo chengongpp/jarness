@@ -30,8 +30,9 @@ make            # 打包到 dist/（jarness.jar + mods/*.jar + executor/jarness-
 
 base dir 默认是 `$HOME/.local/share/jarness`：`mods/` 放外置 mod jar，`config/` 放配置
 （`jarness.toml`、`providers.toml`、以及以 mod id 命名的 per-mod 配置目录），`presets/` 放预设，
-`data/jarness.db` 是镜像库（SQLite，turn 事务 + checkpoint）。每个 agent 的工作目录与 base dir 无关，
-默认在 `<base>/workspaces/agents/agent-<pid>` 下。
+`data/jarness.db` 是镜像库（SQLite，turn 事务 + checkpoint，也存 shm cell）。工作目录与 base dir
+分离，但不再按 agent 创建：同一 namespace 的所有 agent（包括 subagent）共享
+`<base>/workspaces/<namespace-id>`，可用 `[defaults] cwd` / `[namespaces.<id>] cwd` 覆盖。
 
 镜像可以恢复：
 
@@ -77,7 +78,8 @@ pid 0 是真实的 **super agent**（平台能力：`platform` / `namespace`）�
 能力按 `requested ∩ parent ∩ namespace.defaults` 逐层衰减，父节点退出时子树被 kill。
 super agent 有 `ns_list/ns_create/ns_remove/daemon_status/agent_tree/agent_kill/agent_signal` 平台工具。
 
-namespace 可从 `config/jarness.toml` 声明：
+namespace 可从 `config/jarness.toml` 声明；`cwd` 是同一 namespace 内所有 agent（含 subagent）的
+共享工作目录：
 
 ```toml
 [supervisor]
@@ -85,22 +87,29 @@ max_depth = 16       # 0 = 不限制
 max_children = 32    # 0 = 不限制
 
 # 默认 namespace 由 [defaults] 构造；这里只声明额外的 namespace。
+[defaults]
+cwd = "workspaces/default"   # 可选；默认 <base>/workspaces/default
+
 [namespaces.review]
 template = "minimal"
-model = "GB10/DeepSeek-V4-Flash"
+cwd = "workspaces/review"    # 可选；默认 <base>/workspaces/review
+model = "GB10/deepseek-v4.1-flash"
 store = "jdbc:sqlite:/var/lib/jarness/review.db"   # 可选：独立镜像库
 capabilities = ["fs.read", "fs.write", "model"]     # 可选：缺省为本地全套（不含 platform）
 ```
 
-`./jn namespaces` 或 `java -jar dist/jarness.jar namespaces` 会列出各 namespace 的能力上限、
+`./jn namespaces` 或 `java -jar dist/jarness.jar namespaces` 会列出各 namespace 的 cwd、能力上限、
 模型档位与默认模板。
 
 ## 协作、异步与观测
 
 - **mailbox**：每个 agent 有有界 mailbox；`Supervisor.deliver` 走 mailbox（满即拒绝），异步工具完成后
   结果作为新 turn 回来。
-- **IPC**：`runtime.ipc()` 提供 blackboard（版本化 cell / CAS / watch / 锁）和 channel
-  （有界/rendezvous / select）；句柄需要 `ipc` 能力，owner 退出时自动关闭。
+- **IPC/shm**：`runtime.ipc()` 提供 namespace 内的 **Shm**（Shared Memory；版本化 cell / CAS /
+  watch / 锁，内存读 + SQLite 写穿，daemon 重启可恢复）和 channel（有界/rendezvous / select）。
+  模型侧工具 `shm` 与 `agent_send` 都是 **JVM 内**执行（`ToolForm.LOCAL`），不会下发 executor：
+  `shm` 直接读写共享内存，`agent_send` 直接把 `DATA` 消息投到目标 agent 的 mailbox。
+  shm 需要 `ipc` 能力；creator 退出不会清空共享状态，channel 仍随 owner 回收。
 - **观测**：`runtime.observation().subscribe(sessionId, consumer)` 订阅 committed 事件；
   `events(sessionId, fromTurn)` 做回放。所有事件都在 turn 的同一事务里写入。
 - **重启**：`RestartPolicy.ON_FAILURE/ALWAYS` + `[supervisor] restart_delay_ms/max_restarts`，
@@ -112,7 +121,7 @@ capabilities = ["fs.read", "fs.write", "model"]     # 可选：缺省为本地�
 
 ```bash
 make test       # 单元测试
-make it         # 需要 tmp/endpoint.txt 的联调测试
+make it         # 联调测试；优先使用已安装的 ~/.local/share/jarness/config/providers.toml
 ```
 
 ## 设计决策

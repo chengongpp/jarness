@@ -193,8 +193,8 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 | --- | --- |
 | CONC-1 mailbox | 每个 agent 一个有界 `Mailbox`（默认 256，`[mailbox] capacity`）；`DATA` 变 turn、`CONTROL` 走 signal、`ASYNC_RESULT` 在空闲时开新 turn；`Supervisor.deliver` 走 mailbox，满即拒绝（背压） |
 | TOOL-3 异步 | `Tool.mode()==ASYNC` 时当前 turn 记录 `accepted callId`，工具体在虚拟线程执行，完成后投递 mailbox；结果成为下一 turn 的用户消息 |
-| IPC-1/2/3 | `Blackboard`（版本化 cell、CAS、watch、悲观锁、snapshot）、`Channel`（有界/rendezvous、send/trySend/recv/tryRecv/close/select）；`IpcRegistry` 持有句柄 |
-| 句柄即能力 | 创建 board/channel 要求 `IPC` capability；owner pid 退出时 `closeOwned` 关闭全部句柄；`Supervisor.createBoard/createChannel` 委托 |
+| IPC-1/2/3 | `Shm`（版本化 cell、CAS、watch、悲观锁、snapshot；namespace 内命名、内存读 + SQLite 写穿）、`Channel`（有界/rendezvous、send/trySend/recv/tryRecv/close/select）；`IpcRegistry` 持有句柄 |
+| 句柄即能力 | 创建/attach shm 与创建 channel 要求 `IPC` capability；`closeOwned` 回收 owner 的 channel；shm 是 namespace 共享状态，creator 退出不清空；`Supervisor.createShm/createChannel` 委托 |
 | SUPER-1 | pid 0 的真实 super agent：`CapabilitySet.root()`（含 PLATFORM/NAMESPACE）、`super` 模板、平台工具 `ns_list/ns_create/ns_remove/daemon_status/agent_tree/agent_kill/agent_signal`；首次 root spawn（或 `ensureSuperAgent`）时惰性创建 |
 | 平台工具 | 每个平台工具都要求 `PLATFORM`，普通 agent 即使强行 allowTool 也会被能力门拒绝；root agent 挂在 super 下，cap 仍是 ns.defaults |
 | CLI/TUI | `jarness super` 直接和 pid 0 对话；TUI `/super` 切换；`jarness sessions` 可见 super 会话 |
@@ -239,7 +239,7 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 | 生命周期 | `AgentState` 增补 `SUSPENDED` / `DEACTIVATING` / `RESTARTING`；`Supervisor.suspend` = checkpoint + SUSPENDED |
 | 冷观测 | 明确 v1 不做（设计如此） |
 
-测试：`ObservationTest`、`RestartTest`、`RemoteExecutorTest`、`RemoteTlsExecutorTest`、`NetFetchExecutorTest`；全仓 87 个测试。
+测试：`ObservationTest`、`RestartTest`、`RemoteExecutorTest`、`RemoteTlsExecutorTest`、`NetFetchExecutorTest`；v1.4 后的全仓测试数见 §14。
 
 **明确未实现（开放问题，不是遗漏）**：
 
@@ -276,3 +276,46 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 - **enrollment**：静态 enrollment token（env 传递，per-call HMAC）；**secret 轮换**仍是 Q36 的
   开放部分，当前重启 daemon/executor 才能换 token。
 - **测试**：`RemoteExecutorTest`（明文回环）、`RemoteTlsExecutorTest`（TLS）。
+
+
+## 14. v1.4 修正：IPC 落回 JVM，cwd 落到 namespace（2026-11-02）
+
+> 本节是用户 review 后对 v1.3 实现的两处语义修正。`docs/harness-design.md` 是用户维护的目标文档，
+> 其中 “Blackboard” 一词在本实现里对应 `Shm`；不直接改该文档。
+
+### 14.1 IPC
+
+| 项 | v1.4 实现 |
+| --- | --- |
+| shm | `api.ipc.Shm`（原 `Blackboard`）、`ShmImpl`；namespace 内命名，cell 内存读 + SQLite `shm_boards/shm_cells` 写穿；跨 daemon 重启可 re-attach |
+| shm 工具 | `shm`（create/read/write/cas/delete/list/snapshot），`ToolForm.LOCAL`，要求 `ipc` |
+| mailbox 工具 | `agent_send` 直接 `target.deliver(MailboxMessage.data(...))`，`ToolForm.LOCAL`，要求 `ipc`；跨 namespace 需 `namespace`/`platform` |
+| executor | shm/agent_send 不经过 `ExecutionRegistry`；relay 只用于 `fs.*`/`exec.run`/`net.fetch` |
+| 生命周期 | shm creator 退出不清空（共享内存）；channel 仍随 owner `closeOwned` 回收；显式 `removeShm` 才删除持久 cell |
+| API 破坏 | `createBoard`/`board`/`boards`/`removeBoard` → `createShm`/`attachShm`/`findShm`/`shms`/`removeShm`；`Supervisor.createBoard` → `createShm` |
+
+测试：`IpcTest`（CAS/watch/lock、namespace 隔离、owner 退出后仍可读、runtime 重启恢复）、
+`IpcToolTest`（无 executor 时 `shm` 仍成功；`agent_send` 触发目标 mailbox 新 turn；两个工具都是
+`ToolForm.LOCAL`）。
+
+### 14.2 cwd
+
+| 项 | v1.4 实现 |
+| --- | --- |
+| 唯一来源 | `NamespaceMetadata.cwd()`；`Namespace.cwd()` 便捷访问 |
+| 默认值 | `<base>/workspaces/default`；额外 namespace 为 `<base>/workspaces/<id>` |
+| 显式配置 | `[defaults] cwd = "..."`、`[namespaces.<id>] cwd = "..."`；相对路径相对 base dir |
+| 子 agent | `SubagentTool` 不再创建 `subagents/<uuid>`；`agent_spawn` 也不传 workspace；所有 agent 共享 namespace cwd |
+| API 破坏 | `AgentRequest.workspace` 与 `JarnessRuntime.spawn(template, name, workspace)` 删除；CLI `-w` 删除 |
+| resume | `AgentImpl` 发现 session 记录的 workspace 与 namespace cwd 不同时，调用 `Session.rebindWorkspace` 并落库 |
+| 观测 | `jarness namespaces` 与 `ns_list` 显示 cwd；`ns_create` 支持 `cwd` 参数 |
+
+测试：`WorkspaceTest`（subagent 与 parent 的 `workspace()` 相同，且没有 `subagents/` 目录）；
+`IpcTest.shmNamesAreScopedToTheNamespace` 同时覆盖额外 namespace 的 cwd 创建。
+
+### 14.3 测试与端点
+
+- `TestEndpoints` 优先使用 `~/.local/share/jarness/config/providers.toml` 与
+  `defaults.provider`，回退 `tmp/endpoint.txt`；`make it` 跟随已安装运行时的端点。
+- 全仓 `mvn clean package`：**93 个测试**（v1.4 新增 `IpcToolTest` 3 个、`WorkspaceTest` 1 个、
+  `IpcTest` +2；原 87 个）。

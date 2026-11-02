@@ -253,7 +253,7 @@ public class GreetTool implements Tool {
   调用会在工具体执行前被拒绝（模型看到 `capability denied: ...`）。当前是类型级门；
   路径/域名级 scope 由 P2 的 execution provider 强制。
 - 路径一律过 `ctx.resolve(path, intent)`：`intent=false` 只解析；`intent=true` 会按沙箱
-  模式（`read-only` / `workspace-write`（默认） / `full-access`）拦截工作区外的写入。
+  模式（`read-only` / `workspace-write`（默认） / `full-access`）拦截 namespace cwd 外的写入。
 - 读写文件前想清楚 `readOnly` 标志：只读工具允许在只读沙箱里用，也允许并行调用；
   实现必须是线程安全的。
 - 单条观测超过 `limits.tool_output_max_chars`（默认 120000）会被循环截断，自己不用管，
@@ -382,7 +382,13 @@ a.manifest();         // 创建时的清单：template / loop / restart / orphan
 拒绝会以 `SpawnDeniedException`（`reason()` 五类 + 模板/模型两类）抛出，同时发
 `SPAWN_DENIED` 事件。要让你的 agent 能跨 namespace，必须显式拿到 `CapKind.NAMESPACE`；
 默认 namespace 只给本地能力（`fs.read` / `fs.write` / `exec` / `net` / `model` / `spawn` /
-`extend` / `ipc`），`platform` 保留给 P3 的 super agent。
+`extend` / `ipc`），`platform` 保留给 super agent。
+
+**工作目录**：`AgentRequest` 不再有 `workspace` 字段。每个 agent（包括 `subagent` /
+`agent_spawn` 创建的子 agent）都使用 `agent.namespace().cwd()`，也就是
+`NamespaceMetadata.cwd`。默认 namespace 是 `<base>/workspaces/default`，额外 namespace 是
+`<base>/workspaces/<id>`；配置里用 `[defaults] cwd` / `[namespaces.<id>] cwd` 覆盖。不要再为子
+agent 创建私有目录；同一 namespace 内的相对路径和文件副作用本来就是共享的。
 
 ### 6.7 镜像、turn 事务与恢复
 
@@ -416,8 +422,8 @@ ic.tools().register(RelayTool.of(tool, "fs.write"));   // 模型仍看到 MyTool
 
 - `relayName()` 是 executor 的 internal 名称；`exec.run` / `fs.*` 由内置 executor 提供。自定义 executor
   工具需要同时改 `executor/src/main.rs` 的 `dispatch` 与 `TOOLS`，否则 `execution_failed: unknown ...`。
-- `ExecRequest` 带 `workspace/sandbox/caps`；executor 再做一次能力和沙箱校验。不要指望「daemon 已经
-  校验过」而跳过 executor 侧检查。
+- `ExecRequest` 带 `workspace/sandbox/caps`；这里的 `workspace` 就是调用者所在 namespace 的
+  cwd。executor 再做一次能力和沙箱校验；不要指望「daemon 已经校验过」而跳过 executor 侧检查。
 - `Tool.mode()` 目前只用 `SYNC`；`ASYNC` 的完成事件在 P3 的 mailbox 里接。
 - 审批：`runtime.approvals().register("tui", (request, timeout) -> ...)`。`[approval] policy = "ask"`
   时没有 handler 就 deny；`never` 只放行 `allow` 列表里的工具名。审批发生在能力门之后、执行之前。
@@ -426,8 +432,15 @@ ic.tools().register(RelayTool.of(tool, "fs.write"));   // 模型仍看到 MyTool
 
 - **mailbox**：`agent.mailbox()`；`agent.deliver(MailboxMessage.data(...))` 或
   `runtime.supervisor().deliver(id, text)`。满时 `offer` 返回 false，按背压处理，不要忙等。
-- **blackboard**：`runtime.ipc().createBoard(owner, "task-board")`；`read/write/compareAndSet/watch/lock`。
-  句柄就是权限，不需要再走能力检查；owner 退出时自动 close。
+- **shm（Shared Memory）**：`runtime.ipc().createShm(owner, "task-board")` 或
+  `attachShm(owner, id)`；`read/write/compareAndSet/watch/lock`。shm 按 namespace 命名，cell 是
+  “内存读 + SQLite 写穿”，daemon 重启后可按 id re-attach。创建/attach 需要 `ipc` 能力；creator
+  退出不会清空共享内容，显式 `removeShm(namespace, id)` 才删除。模型侧对应 `shm` 工具
+  （create/read/write/cas/delete/list/snapshot），它和 `agent_send` 都是 `ToolForm.LOCAL`，
+  直接跑在 daemon JVM 里，**不会**经过 executor。
+- **agent_send**：模型工具，直接把 `MailboxMessage.data(senderPid, text)` 投到目标 agent 的
+  mailbox；目标 worker 会把它当作 `DATA` 消息开新 turn。同 namespace 即可；跨 namespace 需要
+  `namespace` 或 `platform` 能力。
 - **channel**：`runtime.ipc().createChannel(owner, capacity)`；capacity=0 是会合通道；多消费者时每条
   消息只被一个接收者取走，广播请用 topic + 每订阅者 mailbox。
 - **super agent**：`runtime.supervisor().ensureSuperAgent()` 或 `jarness super`；平台工具
