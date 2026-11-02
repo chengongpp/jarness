@@ -34,11 +34,14 @@ public interface IpcRegistry {
     Shm attachShm(Agent owner, String id);
 
     /**
-     * @param namespaceId namespace id
-     * @param id          shm id
+     * Find an existing shm and return a handle owned by {@code owner}. No shm is created when absent.
+     * The owner must hold the {@code ipc} capability.
+     *
+     * @param owner handle owner
+     * @param id    shm id in the owner's namespace
      * @return the shm, if any
      */
-    Optional<Shm> findShm(String namespaceId, String id);
+    Optional<Shm> findShm(Agent owner, String id);
 
     /** @return every shm id in a namespace. */
     List<String> shms(String namespaceId);

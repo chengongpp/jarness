@@ -58,7 +58,7 @@ class IpcToolTest {
                     .anyMatch(toolResult -> toolResult.text().contains("wrote board/key v1")),
                     "expected the shm observation in the transcript");
 
-            Shm shm = runtime.ipc().findShm("default", "board").orElseThrow();
+            Shm shm = runtime.ipc().findShm(agent, "board").orElseThrow();
             assertEquals("from-jvm", shm.read("key").orElseThrow().value());
         } finally {
             restoreExecutor(previous);

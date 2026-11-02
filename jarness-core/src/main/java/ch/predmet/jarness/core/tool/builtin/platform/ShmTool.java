@@ -94,7 +94,7 @@ public final class ShmTool implements Tool {
             return ToolOutcome.ok(ids.isEmpty() ? "no shm in namespace " + namespace
                     : "shm in " + namespace + ": " + String.join(", ", ids));
         }
-        Optional<Shm> shm = ctx.runtime().ipc().findShm(namespace, name);
+        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent(), name);
         if (shm.isEmpty()) {
             return ToolOutcome.error("shm \"" + name + "\" does not exist in namespace " + namespace);
         }
@@ -109,7 +109,7 @@ public final class ShmTool implements Tool {
 
     private ToolOutcome read(ToolContext ctx, String name, String cell) {
         requireName(name);
-        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent().namespaceId(), name);
+        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent(), name);
         if (shm.isEmpty()) {
             return ToolOutcome.error("shm \"" + name + "\" does not exist in namespace "
                     + ctx.agent().namespaceId());
@@ -153,7 +153,7 @@ public final class ShmTool implements Tool {
 
     private ToolOutcome delete(ToolContext ctx, String name, String cell) {
         requireName(name);
-        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent().namespaceId(), name);
+        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent(), name);
         if (shm.isEmpty()) {
             return ToolOutcome.ok("cell " + name + "/" + cell + " was already absent");
         }
@@ -164,7 +164,7 @@ public final class ShmTool implements Tool {
 
     private ToolOutcome snapshot(ToolContext ctx, String name) {
         requireName(name);
-        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent().namespaceId(), name);
+        Optional<Shm> shm = ctx.runtime().ipc().findShm(ctx.agent(), name);
         if (shm.isEmpty()) {
             return ToolOutcome.error("shm \"" + name + "\" does not exist in namespace "
                     + ctx.agent().namespaceId());

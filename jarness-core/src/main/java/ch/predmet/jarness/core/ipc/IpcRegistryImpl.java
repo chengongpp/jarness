@@ -61,7 +61,7 @@ public final class IpcRegistryImpl implements IpcRegistry {
         ShmImpl shm = new ShmImpl(id, namespace, owner.pid(), store, Map.of());
         shms.put(key(namespace, id), shm);
         LOG.info("agent {} created shm {}/{}", owner.pid(), namespace, id);
-        return shm;
+        return shm.forOwner(owner.pid());
     }
 
     @Override
@@ -82,13 +82,14 @@ public final class IpcRegistryImpl implements IpcRegistry {
             }
             shms.put(key, shm);
         }
-        shm.actor(owner.pid());
-        return shm;
+        return shm.forOwner(owner.pid());
     }
 
     @Override
-    public synchronized Optional<Shm> findShm(String namespaceId, String id) {
-        if (namespaceId == null || id == null) {
+    public synchronized Optional<Shm> findShm(Agent owner, String id) {
+        requireIpc(owner);
+        String namespaceId = owner.namespaceId();
+        if (id == null) {
             return Optional.empty();
         }
         String key = key(namespaceId, id);
@@ -97,7 +98,7 @@ public final class IpcRegistryImpl implements IpcRegistry {
             shm = new ShmImpl(id, namespaceId, 0L, store, store.load(namespaceId, id));
             shms.put(key, shm);
         }
-        return Optional.ofNullable(shm);
+        return Optional.ofNullable(shm).map(found -> found.forOwner(owner.pid()));
     }
 
     @Override
@@ -180,7 +181,7 @@ public final class IpcRegistryImpl implements IpcRegistry {
     @Override
     public synchronized void close() {
         for (ShmImpl shm : shms.values()) {
-            shm.close();
+            shm.shutdown();
         }
         for (ChannelImpl channel : channels.values()) {
             channel.close();

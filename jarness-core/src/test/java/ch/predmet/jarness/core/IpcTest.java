@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -112,6 +113,7 @@ class IpcTest {
         try (JarnessRuntime runtime = runtime()) {
             Agent noIpc = agent(runtime, "no-ipc", CapabilitySet.of(Capability.of(CapKind.FS_READ)));
             assertThrows(SecurityException.class, () -> runtime.ipc().createShm(noIpc, "nope"));
+            assertThrows(SecurityException.class, () -> runtime.ipc().findShm(noIpc, "nope"));
 
             Agent owner = agent(runtime, "owner", CapabilitySet.of(Capability.of(CapKind.IPC)));
             Shm shm = runtime.ipc().createShm(owner, "ephemeral");
@@ -122,6 +124,28 @@ class IpcTest {
             Shm reopened = runtime.ipc().attachShm(
                     agent(runtime, "other", CapabilitySet.of(Capability.of(CapKind.IPC))), "ephemeral");
             assertEquals("survives", reopened.read("handoff").orElseThrow().value());
+        }
+    }
+
+    @Test
+    void shmHandlesShareCellsButNotOwnerIdentity() throws Exception {
+        try (JarnessRuntime runtime = runtime()) {
+            Agent first = agent(runtime, "first", CapabilitySet.of(Capability.of(CapKind.IPC)));
+            Agent second = agent(runtime, "second", CapabilitySet.of(Capability.of(CapKind.IPC)));
+            Shm a = runtime.ipc().createShm(first, "shared-handles");
+            Shm b = runtime.ipc().attachShm(second, "shared-handles");
+            assertNotSame(a, b);
+
+            Cell fromA = a.write("status", "from-a");
+            assertEquals(first.pid(), fromA.ownerPid());
+            Cell fromB = b.compareAndSet("status", fromA.version(), "from-b").orElseThrow();
+            assertEquals(second.pid(), fromB.ownerPid());
+            assertEquals("from-b", a.read("status").orElseThrow().value());
+
+            a.close();
+            assertTrue(a.closed());
+            assertFalse(b.closed(), "closing one owner handle must not close shared memory");
+            assertEquals("from-b", b.read("status").orElseThrow().value());
         }
     }
 
