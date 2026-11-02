@@ -53,7 +53,7 @@ public record JarnessLayout(Path baseDir, Path modsDir, Path configDir, Path pre
         return dataDir().resolve("jarness.db");
     }
 
-    /** @return the legacy v0.1 session store, {@code <base>/sessions.db}, used for one-time migration. */
+    /** @return the legacy v0.1 path, {@code <base>/sessions.db}; no automatic migration is performed. */
     public Path legacySessionDb() {
         return baseDir.resolve("sessions.db");
     }

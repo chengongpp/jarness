@@ -248,10 +248,18 @@ public class GreetTool implements Tool {
   模型把数字写成字符串是常态，accessor 对此宽容。
 - `ToolException` = 给模型看的可恢复错误（参数错、路径越权等）；其它异常会被循环包成
   `tool failed: ...` 的失败观测。**别让异常裸奔**。
-- 工具可以声明所需能力：覆盖 `requiredCaps()` 返回 `Set<CapKind>`，或者用 core 的
-  `CapabilityTool.of(delegate, CapKind.FS_READ)` 包装。agent 的能力集合不包含对应 kind 时，
-  调用会在工具体执行前被拒绝（模型看到 `capability denied: ...`）。当前是类型级门；
-  路径/域名级 scope 由 P2 的 execution provider 强制。
+- 工具可以声明所需能力：在自己的 `Tool` 实现里覆盖 `requiredCaps()`：
+
+  ```java
+  @Override
+  public Set<CapKind> requiredCaps() {
+      return Set.of(CapKind.FS_READ);
+  }
+  ```
+
+  agent 的能力集合不包含对应 kind 时，工具不会出现在模型可见 schema 中；即使模型直接构造调用，
+  dispatcher 仍会在工具体执行前返回 `capability denied`。路径/域名级 scope 由执行侧强制；
+  自定义 LOCAL 文件工具还应调用 `ctx.resolveScoped(path, kind, intent)`，不要只调用普通 `resolve`。
 - 路径一律过 `ctx.resolve(path, intent)`：`intent=false` 只解析；`intent=true` 会按沙箱
   模式（`read-only` / `workspace-write`（默认） / `full-access`）拦截 namespace cwd 外的写入。
 - 读写文件前想清楚 `readOnly` 标志：只读工具允许在只读沙箱里用，也允许并行调用；
@@ -286,13 +294,16 @@ ic.templates().register(SimpleAgentTemplate.builder("web-bot")
 
 ### 6.3 注册 Provider
 
+自己实现 `Provider`，然后在 instrument 中注册：
+
 ```java
-ic.providers().register(ProviderFactory.create(profile));   // core 的工厂；或自己实现 Provider
+ic.providers().register(new MyProvider());
 ```
 
-自己实现 `Provider` 时：实现 `complete(ChatRequest)` 与 `complete(ChatRequest, StreamSink)`，
-把响应归一化成 `Message`（Text/Reasoning/ToolCall 块）+ `Usage`；失败抛 `ProviderException`
-（带 HTTP 状态码，`retryable()` 由状态码推导）。参考 `jarness-core` 里三个适配器的写法。
+Provider 负责实现 `complete(ChatRequest)` 与 `complete(ChatRequest, StreamSink)`，把响应归一化成
+`Message`（Text/Reasoning/ToolCall 块）+ `Usage`；失败抛 `ProviderException`（HTTP 状态码可推导
+retryable，网络/解析错误可分别用 `ProviderException.transport/parse`）。**不要按只有 API 依赖的
+最小工程去引用 core 的 `ProviderFactory`**；它是内建 profile 的内部装配类，不是稳定 mod API。
 
 ### 6.4 挂钩子
 
@@ -390,6 +401,10 @@ a.manifest();         // 创建时的清单：template / loop / restart / orphan
 `<base>/workspaces/<id>`；配置里用 `[defaults] cwd` / `[namespaces.<id>] cwd` 覆盖。不要再为子
 agent 创建私有目录；同一 namespace 内的相对路径和文件副作用本来就是共享的。
 
+**执行路由**：namespace 的 `executionProviders` 是有序 executor provider id 或 `local`/`remote` kind。
+配置里写 `[defaults] execution_providers = ["local"]`，或 `[namespaces.<id>] execution_providers = ["remote"]`。
+动态 `ns_create` 会继承默认 namespace 的路由。不要把物理 executor 连接塞进 AgentTemplate。
+
 ### 6.7 镜像、turn 事务与恢复
 
 如果你自己驱动 `Session`（而不是用 `AgentImpl`），要遵守同一套持久化契约：
@@ -413,20 +428,38 @@ session.commitTurn(turn, imageMetadata);  // 唯一 durability 边界：单事�
 
 ### 6.8 执行器、工具形态与审批
 
-工具默认 `form() == LOCAL`（daemon 内执行）。要交给 Rust executor：
+工具默认 `form() == LOCAL`（daemon 内执行）。要交给 executor，**只依赖 API 声明即可**：
 
 ```java
-Tool tool = CapabilityTool.of(new MyTool(), CapKind.FS_WRITE);
-ic.tools().register(RelayTool.of(tool, "fs.write"));   // 模型仍看到 MyTool.spec()
+public final class MyRelayTool implements Tool {
+    private final ToolSpec spec = ToolSpec.readOnly("my_remote_read", "Read remotely.", Map.of());
+
+    @Override public ToolSpec spec() { return spec; }
+    @Override public Set<CapKind> requiredCaps() { return Set.of(CapKind.FS_READ); }
+    @Override public ToolForm form() { return ToolForm.RELAY; }
+    @Override public String relayName() { return "acme.read"; }
+
+    @Override
+    public ToolOutcome invoke(ToolInvocation invocation, ToolContext ctx) {
+        throw new UnsupportedOperationException("RELAY is dispatched by the agent loop");
+    }
+}
+
+ic.tools().register(new MyRelayTool());
 ```
 
-- `relayName()` 是 executor 的 internal 名称；`exec.run` / `fs.*` 由内置 executor 提供。自定义 executor
-  工具需要同时改 `executor/src/main.rs` 的 `dispatch` 与 `TOOLS`，否则 `execution_failed: unknown ...`。
-- `ExecRequest` 带 `workspace/sandbox/caps`；这里的 `workspace` 就是调用者所在 namespace 的
+- `relayName()` 是 executor 的 internal 名称。executor 必须在 hello 中 advertise 同名工具，并实际实现它；
+  内建 Rust executor 的新工具需要修改 `executor/src/main.rs` 的 `dispatch` 与 `TOOLS`，自定义 executor
+  则实现自己的 dispatch。**不需要、也不应在 API-only mod 里引用 core 的 `RelayTool`**。
+- `ExecRequest` 带 `workspace/sandbox/caps/namespace`；这里的 `workspace` 就是调用者所在 namespace 的
   cwd。executor 再做一次能力和沙箱校验；不要指望「daemon 已经校验过」而跳过 executor 侧检查。
-- `Tool.mode()` 目前只用 `SYNC`；`ASYNC` 的完成事件在 P3 的 mailbox 里接。
+- `Tool.mode()` 支持 `SYNC` 与 `ASYNC`；ASYNC 完成后经 mailbox 开新 turn。后台 bash 的
+  `run_in_background` 则使用 `job_output/job_kill`，不要与 ASYNC 的 turn 语义混为一谈。
+- `ToolSpec.readOnly` 是审批使用的副作用声明：所有 mutating 工具（包括 IPC/SPAWN/PLATFORM）都会经过
+  当前 namespace 的 approval policy，不是只有 FS_WRITE/EXEC/NET。
 - 审批：`runtime.approvals().register("tui", (request, timeout) -> ...)`。`[approval] policy = "ask"`
-  时没有 handler 就 deny；`never` 只放行 `allow` 列表里的工具名。审批发生在能力门之后、执行之前。
+  时没有 handler 就 deny；`never` 只放行 `allow` 列表里的工具名。审批发生在能力门之后、执行之前；
+  当前 ASK handler 是同步等待，不是 mailbox 化审批。
 
 ### 6.9 协作原语与平台面
 
@@ -448,7 +481,8 @@ ic.tools().register(RelayTool.of(tool, "fs.write"));   // 模型仍看到 MyTool
   普通 agent 不要试图调用这些工具，能力门会拒绝。
 - **异步工具**：`Tool.mode()` 返回 `ASYNC` 即进入异步路径；当前 turn 只看到 `accepted callId`，
   完成后 mailbox 投递结果并新开一个 turn。工具实现要保证幂等，因为调用方可能重试。
-- **观测**：`runtime.observation().subscribe(sessionId, consumer)`；只有 committed 事件可见。
+- **观测**：`runtime.observation().subscribe(sessionId, consumer)`；只有 committed 事件可见。独立 namespace
+  store 使用 `subscribe(namespaceId, sessionId, consumer)` 或 `events(namespaceId, sessionId, fromTurn)`。
 
 ---
 

@@ -1,12 +1,11 @@
-# 现有实现 ↔ `harness-design.md` v1.3 差异审计
+# 现有实现 ↔ `harness-design.md`：演进与差异记录
 
-> 2026-11-01 · 审计对象：`docs/harness-design.md`（v1.3）与当前 `main`（7 个提交，v0.1 运行时）
-> 结论：**存在系统性冲突**，不是补几个接口能对齐的。现有实现对应的是旧 draft 的「平面 supervisor + 全局 store + JVM 内工具」；v1.3 要求「监督树 + namespace + capability + 镜像事务 + daemon 外 executor」。
+> 2026-11-01 · 初始审计对象：`docs/harness-design.md`（v1.3）与当时 `main`（7 个提交，v0.1 运行时）
+> 历史结论：当时实现对应旧 draft 的「平面 supervisor + 全局 store + JVM 内工具」，与 v1.3 存在系统性冲突。
 >
-> 处理原则：以设计文档为准；0.1.x 允许破坏 API；可复用的层（provider、mod loader、tool、TUI/CLI）保留并逐步改造。
->
-> **2026-11-02 v1.4**：IPC 改回 daemon JVM 内的 `Shm` / `agent_send`，工作目录改为 namespace cwd；
-> 逐项实现与测试见文末 §14。
+> **当前状态请看 [`architecture-review-2026-11-02.md`](architecture-review-2026-11-02.md)。**
+> 本文 §0–§13 是逐轮落地历史，不应再把各段开头当作当前代码描述；§14 是 v1.4 的 IPC/cwd 修正记录。
+> 2026-11-02 的审计与修复已覆盖单写者、per-ns 路由、资源 scope、commit/checkpoint、Shm 句柄等问题。
 
 ## 0. 总账
 
@@ -249,8 +248,9 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 - **enrollment secret 轮换**：TLS + 静态 enrollment token 已实现（见 §13）；Q36 的“轮换策略”仍未实现（重启才能换 token）。
 - **Q38**：模型档位覆盖的约束。
 - **per-stream credit / progress 帧**：本地调用是请求-结果多路复用，没有流控和进度回调。
-- **净网工具**：`web_search/web_fetch` 仍在 daemon 内（NET 能力门在工具级），executor 的 net.fetch 与 NET scope 强制未做。
-- **checkpoint 自动阈值**：支持 `session.checkpoint_every`，默认关闭；设计允许阈值后调。
+- **网络工具（当时状态）**：`web_search` 仍在 daemon 内；`web_fetch` 在 relay 模式走 executor 的 `net.fetch`，见 §13。
+  2026-11-02 又为 LOCAL/executor 两条路径补了资源 scope 与 redirect 目标校验。
+- **checkpoint 自动阈值**：`session.checkpoint_every` 已实现，默认关闭；设计允许阈值后调。
 
 ## 12. 对照不变量
 
@@ -259,9 +259,9 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 | I1 每个 agent 在树中且绑定唯一 ns | 是；super 也是树节点，root 挂 super |
 | I2 子 agent 只能经 spawn/fork | 是；工具走 `spawnFrom`，裸线程不创建 agent |
 | I3 能力沿树只减不增 | 是；`requested ∩ parent ∩ ns`，resume 再与镜像 caps 求交 |
-| I4 镜像唯一权威、turn 事务 | 是；`LocalSessionStore` 单事务 commit，未提交 turn 崩溃即丢 |
-| I5 副作用只从 core/executor 强制点 | 部分；默认 relay 从 executor 出，`execution.mode=local` 仍可在 daemon 内 |
-| I6 spawn=exec / fork=fork | 是；fork 复制消息（旧 turn 的镜像复制待细化） |
+| I4 镜像唯一权威、turn 事务 | 部分；正常路径单事务 commit，2026-11-02 已修失败传播与 checkpoint 边界；BOOT-1 树恢复、pending 对账仍未闭环 |
+| I5 副作用只从 core/executor 强制点 | 部分；relay 与显式 local 均有能力检查，但 LOCAL 只是兼容路径，强隔离边界仍是 executor |
+| I6 spawn=exec / fork=fork | 部分；spawn 完整，fork 当前仍只复制消息，完整 committed turn/pending 复制待实现 |
 | I7 ModelProfile 属 ns | 是；模板无模型字段，manifest/request 可覆盖（Q38） |
 
 ## 13. P5 远端补充（2026-11-01，第二轮）
@@ -320,5 +320,6 @@ P1 完成后，C6 / C13 / C15 的目标语义已经成立（C13 的 tree positio
 
 - `TestEndpoints` 优先使用 `~/.local/share/jarness/config/providers.toml` 与
   `defaults.provider`，回退 `tmp/endpoint.txt`；`make it` 跟随已安装运行时的端点。
-- 全仓 `mvn clean package`：**93 个测试**（v1.4 新增 `IpcToolTest` 3 个、`WorkspaceTest` 1 个、
-  `IpcTest` +2；原 87 个）。
+- v1.4 当时的全仓 `mvn clean package`：**93 个测试**（新增 `IpcToolTest` 3 个、`WorkspaceTest` 1 个、
+  `IpcTest` +2；原 87 个）。2026-11-02 审计后又增加了路由、安全、恢复与生命周期回归；最新数量以
+  当前构建结果和 [`architecture-review-2026-11-02.md`](architecture-review-2026-11-02.md) 为准。

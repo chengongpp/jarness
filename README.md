@@ -2,7 +2,11 @@
 
 Jarness 是一个基于 Java 21 LTS 的企业级多 Agent 运行时。
 目标架构见 [docs/harness-design.md](docs/harness-design.md)（v1.3），架构草案见 `draft/`；
-两者之间的差异与迁移计划见 [docs/design-gap-analysis.md](docs/design-gap-analysis.md)。
+两者之间的历史差异与迁移记录见 [docs/design-gap-analysis.md](docs/design-gap-analysis.md)；
+**当前审计与剩余架构缺口**见 [docs/architecture-review-2026-11-02.md](docs/architecture-review-2026-11-02.md)。
+
+> 当前 CLI 是 standalone 入口：每条命令各自创建并关闭一个 JVM runtime，还不是长驻 daemon 的 thin client。
+> 因此 `super`/平台工具只能管理当前进程；独立 daemon 控制面与 BOOT-1 监督树恢复尚未实现。
 设计上参考 deepseek-harness 的轻量可组装风格与 NeoForge/FancyModLoader 的模组体系。
 
 ## 模块
@@ -46,11 +50,14 @@ base dir 默认是 `$HOME/.local/share/jarness`：`mods/` 放外置 mod jar，`c
 默认 `[execution] mode = "relay"`：`read`/`write`/`edit`/`delete`/`glob`/`grep`/`bash` 不再在 daemon
 JVM 里执行，而是由 `dist/executor/jarness-executor`（Rust）执行。daemon 监听 loopback，executor 回连；
 每次调用带能力视图和 HMAC token。`make` 会构建它，也可单独 `make executor`；找不到时可显式退回
-`[execution] mode = "local"`（RELAY 缺 provider 时不会静默回退）。
+`[execution] mode = "local"`（RELAY 缺 provider 时不会静默回退）。LOCAL 兼容模式也会检查 FS/NET
+resource scope，但强隔离与抗竞态边界应使用 executor。
 
 ```toml
 [execution]
 mode = "relay"          # 或 "local"
+# 默认 namespace 的 executor 路由；值可为 provider id 或 local/remote
+# execution_providers = ["local"]
 
 [approval]
 policy = "allow"        # allow | ask | never
@@ -69,6 +76,15 @@ timeout_seconds = 300   # policy=ask 的等待上限
 
 远端 executor 用 `--connect host:port --tls --ca server.pem` 启动，token 放在
 `JARNESS_EXECUTOR_TOKEN`。`remote_tls=true` 但 keystore 缺失时 remote listener 不会启动（不会退化成明文）。
+local 与 remote 同名工具默认仍选 local；要给某个 namespace 指定远端路由，使用：
+
+```toml
+[namespaces.review]
+execution_providers = ["remote"]   # 也可写注册时的精确 provider id
+```
+
+后台 `bash(run_in_background=true)` 在 relay 下也可用：JobRegistry 的虚拟线程等待 executor 结果，
+`job_output/job_kill` 语义与 local 一致。
 
 ## Agent、namespace 与能力
 
@@ -111,7 +127,8 @@ capabilities = ["fs.read", "fs.write", "model"]     # 可选：缺省为本地�
   `shm` 直接读写共享内存，`agent_send` 直接把 `DATA` 消息投到目标 agent 的 mailbox。
   shm 需要 `ipc` 能力；creator 退出不会清空共享状态，channel 仍随 owner 回收。
 - **观测**：`runtime.observation().subscribe(sessionId, consumer)` 订阅 committed 事件；
-  `events(sessionId, fromTurn)` 做回放。所有事件都在 turn 的同一事务里写入。
+  `events(sessionId, fromTurn)` 做回放。独立 namespace store 可用
+  `subscribe(namespaceId, sessionId, consumer)` 显式指定。所有事件都在 turn 的同一事务里写入。
 - **重启**：`RestartPolicy.ON_FAILURE/ALWAYS` + `[supervisor] restart_delay_ms/max_restarts`，
   失败后从同一 session/image 重建。
 - **循环钩子**：`runtime.loopHooks()` 提供 `beforeTurn/beforeStep/afterStep/afterTurn`；

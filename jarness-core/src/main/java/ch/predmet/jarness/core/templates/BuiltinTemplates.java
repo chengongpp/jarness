@@ -7,7 +7,7 @@ import ch.predmet.jarness.api.agent.SimpleAgentTemplate;
 import java.util.List;
 
 /**
- * The four built-in agent templates.
+ * The five built-in agent templates (including the privileged super template).
  *
  * <ul>
  *   <li>{@code void} — a plain chatbot, no tools at all.</li>

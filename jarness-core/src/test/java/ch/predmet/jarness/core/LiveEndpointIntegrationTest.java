@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * End-to-end test against the live endpoint described by {@code tmp/endpoint.txt}.
+ * End-to-end test against the installed providers.toml, with {@code tmp/endpoint.txt} as fallback.
  *
  * <p>Runs only with {@code -Djarness.it=true}; excluded from the default build via the
  * {@code integration} tag.</p>

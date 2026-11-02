@@ -6,14 +6,13 @@ import java.util.Optional;
 /**
  * Durable session storage and the agent image.
  *
- * <p>SQLite is the default implementation, and the JDBC URL is configuration, so a mod may swap the
- * backing store without touching the agent loop.</p>
+ * <p>SQLite is the default implementation. Custom stores can be supplied when constructing a
+ * namespace programmatically; a dynamic-mod bootstrap SPI is not implemented yet. Implementations
+ * must provide real turn transactions and image/event methods rather than relying on no-op defaults.</p>
  *
  * <p>The store is the durability boundary: a turn is written in one transaction when it commits,
- * so a crash in the middle of a turn leaves no half-written messages behind. Implementations that
- * cannot provide a transaction may fall back to the default {@link #commitTurn} implementation,
- * which persists messages first and then the turn; the local store overrides it with a real
- * transaction.</p>
+ * so a crash in the middle of a turn leaves no half-written messages behind. Every implementation
+ * must make {@link #commitTurn} atomic; there is deliberately no best-effort default.</p>
  */
 public interface SessionStore extends AutoCloseable {
 
@@ -100,39 +99,27 @@ public interface SessionStore extends AutoCloseable {
      * Commit a terminal turn atomically.
      *
      * <p>This is the durability boundary: the turn, the messages it produced, and its events become
-     * visible together, or not at all. The default implementation is a best-effort fallback for
-     * stores that cannot transact; the local store performs a single SQLite transaction.</p>
+     * visible together, or not at all.</p>
      *
      * @param session     owning session
      * @param turn        the terminal turn
      * @param newMessages messages produced during the turn, in wire order
      * @param image       image metadata to persist, or {@code null}
      */
-    default void commitTurn(Session session, Turn turn, List<Message> newMessages, ImageMetadata image) {
-        for (Message message : newMessages) {
-            saveMessage(session, message);
-        }
-        saveTurn(session, turn);
-        if (image != null) {
-            saveImage(image);
-        }
-    }
+    void commitTurn(Session session, Turn turn, List<Message> newMessages, ImageMetadata image);
 
     /**
      * @param sessionId owning session id
      * @return the image metadata of the session, if it has been written
      */
-    default Optional<ImageMetadata> image(String sessionId) {
-        return Optional.empty();
-    }
+    Optional<ImageMetadata> image(String sessionId);
 
     /**
      * Persist image metadata without committing a turn, e.g. after a capability revocation.
      *
      * @param image the image metadata
      */
-    default void saveImage(ImageMetadata image) {
-    }
+    void saveImage(ImageMetadata image);
 
     /**
      * Write a checkpoint of the session image and compact the covered deltas.
@@ -141,6 +128,7 @@ public interface SessionStore extends AutoCloseable {
      * @param image   image metadata to update, or {@code null}
      */
     default void checkpoint(Session session, ImageMetadata image) {
+        throw new UnsupportedOperationException("checkpoint is not supported by this session store");
     }
 
     /**
@@ -150,9 +138,7 @@ public interface SessionStore extends AutoCloseable {
      * @param fromTurn  first turn index to include
      * @return events in insertion order
      */
-    default List<EventRecord> events(String sessionId, int fromTurn) {
-        return List.of();
-    }
+    List<EventRecord> events(String sessionId, int fromTurn);
 
     @Override
     void close();

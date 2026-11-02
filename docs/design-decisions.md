@@ -265,3 +265,39 @@ ordering（before/after）。求解为拓扑排序（Kahn），平局时系统 m
 - **live endpoint**：`TestEndpoints` 优先读取已安装的
   `~/.local/share/jarness/config/providers.toml`（并用 `defaults.provider` 选 profile），
   读不到才回退到 `tmp/endpoint.txt`；`make it` 因此跟随 daemon 当前端点。
+
+
+## 24. 2026-11-02 整体走查后的收敛决策（2026-11-02）
+
+本轮走查的完整当前状态见 [`architecture-review-2026-11-02.md`](architecture-review-2026-11-02.md)。
+对含糊或实现与目标冲突之处，采用以下取舍：
+
+- **standalone 不是 daemon**：当前 CLI 每条命令各自启动 runtime 的事实明确写出，不再把同进程平台工具
+  描述成能管理其它 CLI/TUI 进程。真正的控制协议、跨进程 image lease、BOOT-1 树恢复是后续架构工作，
+  不在本轮用一个本地 socket 半成品冒充完成。
+- **namespace 路由存选择器，不存连接对象**：`NamespaceSpec.executionProviders` 是有序 provider id 或
+  `local`/`remote` kind；默认 namespace 为 `local`。物理 provider 仍在 runtime registry 中，断线即不可选。
+  labels/load/capability 匹配留作路由策略扩展，不在 core 里隐式猜测。
+- **RELAY 是 API 声明**：agent dispatcher 根据 `Tool.form()/relayName()` 统一路由，mod 不需要链接 core 的
+  `RelayTool`。core 的 wrapper 仅用于复用内建工具 spec。
+- **审批看声明的副作用**：`ToolSpec.readOnly=false` 即进入 approval policy，不再从 capability kind 反推。
+  IPC/SPAWN/PLATFORM 等 mutating 工具因此同样受 ASK/NEVER 约束。
+- **执行侧路径用 beneath 目录句柄**：Rust 引入 cap-std，而不是“词法前缀 + canonicalize + 再打开”。
+  这样新文件写入与 symlink/TOCTOU 才有统一强制点。LOCAL 只作为兼容模式，也检查真实路径与资源 scope，
+  但不宣称它提供同等级的竞态隔离。
+- **HMAC 绑定完整执行上下文**：签名包含 call/tool/args/deadline/caps/workspace/sandbox/namespace/idempotency，
+  并用 JSON 数组避免分隔符歧义。`web_fetch` 每一跳 redirect 都重新检查 NET host。
+- **commit 失败停止 writer**：宁可让 agent FAILED 并走 restart，也不能把未落库的内存消息带到下一 turn。
+  title/model 在 running turn 中不再独立 update，而由 turn commit 的同事务写入。
+- **checkpoint 与 turn 串行，suspend 先停后快照**：最新 checkpoint 或 committed delta 解码失败时拒绝加载，
+  不回退成静默截断。旧 ImageRef 不静默加载最新；真正 point-in-time resume 另做。
+- **Shm 的状态和句柄分离**：cells/watchers/locks/store 共享，ownerPid/closed/watch 注册属于每个 handle。
+  `findShm` 也需要 owner 和 IPC capability，不再返回无主的可写句柄。
+- **async 完成先投递再清 pending**：mailbox 满时虚拟线程等待；停止时保留 pending 标记并记日志。
+  这只解决运行中不丢结果，不等于已经实现崩溃后的 pending reconciliation。
+- **Registry 快照冻结声明，物理连接保持活态**：tools/model providers/loopHooks 使用 turn snapshot；
+  executor 连接必须能及时反映断线，因此不长期 pin 死 provider 对象。
+- **后台 RELAY 复用 JobRegistry**：job 线程等待 executor 调用，不引入另一套后台协议；模型侧
+  `job_output/job_kill` 在 local/relay 两种模式下语义一致。
+- **预算先修不变量，再做层级记账**：本轮补 toolSlots/depth 衰减和请求 maxTokens/deadline 收窄；
+  父子 reservation/归并仍明确留待后续，不把单次 admission 称为完整树级配额。

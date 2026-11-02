@@ -44,7 +44,7 @@ import java.util.List;
 /**
  * The core system mod ({@code jarness.core}): wires the runtime's own capabilities as instruments
  * so that presets can switch them individually — providers, the builtin tool groups, the baseline
- * prompt sections, and the four built-in templates.
+ * prompt sections, and the five built-in templates.
  *
  * <p>It lives on the classpath, is marked required, and is provided through the
  * {@code ModProvider} SPI so it survives shading into a single application jar.</p>
@@ -163,7 +163,7 @@ public final class CoreMod implements JarnessMod {
                     }));
 
         ctx.instruments().register("templates", true, 400,
-                "The four built-in agent templates: void, minimal, standard, full.",
+                "The five built-in agent templates: void, minimal, standard, full, super.",
                 ic -> BuiltinTemplates.registerAll(ic.templates()));
     }
 
