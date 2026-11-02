@@ -45,8 +45,15 @@ class BudgetTest {
         assertTrue(Budget.of(50, parent.deadline(), -1, 3).fitsWithin(parent));
         assertFalse(Budget.tokens(200).fitsWithin(parent));
         assertFalse(Budget.of(50, parent.deadline(), -1, 5).fitsWithin(parent));
+        assertFalse(Budget.of(50, parent.deadline(), -1, 4).fitsWithin(parent),
+                "spawn depth is a remaining level count and must decrease");
         assertFalse(Budget.of(50, Instant.now().plus(Duration.ofHours(2)), -1, 2).fitsWithin(parent));
         assertFalse(Budget.unlimited().fitsWithin(parent), "an unbounded child does not fit a bounded parent");
+
+        Budget toolBounded = Budget.of(-1, null, 2, -1);
+        assertTrue(Budget.of(-1, null, 2, -1).fitsWithin(toolBounded));
+        assertFalse(Budget.of(-1, null, 3, -1).fitsWithin(toolBounded));
+        assertFalse(Budget.unlimited().fitsWithin(toolBounded), "tool slots must attenuate too");
     }
 
     @Test
@@ -54,6 +61,7 @@ class BudgetTest {
         Budget parent = Budget.of(100, null, 10, 3);
         Budget child = parent.childDefault();
         assertEquals(100, child.tokensLeft());
+        assertEquals(10, child.toolSlots());
         assertEquals(2, child.maxSpawnDepth());
         assertTrue(child.fitsWithin(parent));
         assertEquals(0, child.withMaxSpawnDepth(0).maxSpawnDepth());

@@ -99,13 +99,6 @@ public interface Supervisor extends AutoCloseable {
     Agent spawn(AgentRequest request);
 
     /**
-     * Register an externally constructed agent.
-     *
-     * @param agent the agent; its {@code supervisor()} must be this supervisor
-     */
-    void register(Agent agent);
-
-    /**
      * Remove an agent from the registry and stop it, together with its subtree.
      *
      * @param agentId agent id

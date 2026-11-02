@@ -10,6 +10,9 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.JarnessLayout;
 import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.kernel.ImageRef;
+import ch.predmet.jarness.api.kernel.SpawnDeniedException;
+import ch.predmet.jarness.api.namespace.NamespaceMetadata;
+import ch.predmet.jarness.api.namespace.NamespaceSpec;
 import ch.predmet.jarness.api.session.ImageMetadata;
 import ch.predmet.jarness.api.session.Message;
 import ch.predmet.jarness.api.session.ResumeDeniedException;
@@ -133,6 +136,42 @@ class ResumeTest {
             assertTrue(resumed.pid() != agent.pid());
             assertEquals(session.id(), resumed.session().id());
             assertEquals(1, resumed.session().turns().size());
+        }
+    }
+
+    @Test
+    void activeImageCannotHaveTwoWriters() throws IOException {
+        try (JarnessRuntime runtime = runtime()) {
+            Session session = image(runtime, List.of());
+            Agent first = runtime.spawn(AgentRequest.builder("void").sessionId(session.id()).build());
+
+            SpawnDeniedException denied = assertThrows(SpawnDeniedException.class,
+                    () -> runtime.spawn(AgentRequest.builder("void").sessionId(session.id()).build()));
+            assertEquals(SpawnDeniedException.Reason.IMAGE, denied.reason());
+            assertTrue(denied.getMessage().contains("already owned"), denied.getMessage());
+
+            first.stop("test complete");
+            Agent resumed = runtime.spawn(AgentRequest.builder("void").sessionId(session.id()).build());
+            assertEquals(session.id(), resumed.session().id());
+            assertTrue(resumed.pid() != first.pid());
+        }
+    }
+
+    @Test
+    void resumeCannotRebindAnImageToAnotherNamespace() throws IOException {
+        try (JarnessRuntime runtime = runtime()) {
+            Session session = image(runtime, List.of());
+            runtime.namespaces().create(new NamespaceSpec("other",
+                    NamespaceMetadata.of("other", base.resolve("other-cwd"),
+                            runtime.namespaces().defaultNs().metadata().defaults()),
+                    runtime.sessions(), "void", ""));
+
+            SpawnDeniedException denied = assertThrows(SpawnDeniedException.class,
+                    () -> runtime.spawn(AgentRequest.builder("void")
+                            .sessionId(session.id()).namespace("other").forceResume(true).build()));
+            assertEquals(SpawnDeniedException.Reason.NAMESPACE, denied.reason());
+            assertTrue(denied.getMessage().contains("belongs to namespace default"), denied.getMessage());
+            assertEquals(base, runtime.sessions().load(session.id()).orElseThrow().workspace());
         }
     }
 }

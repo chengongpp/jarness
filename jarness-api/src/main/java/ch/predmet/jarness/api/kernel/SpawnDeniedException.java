@@ -28,6 +28,8 @@ public final class SpawnDeniedException extends RuntimeException {
         TEMPLATE,
         /** The requested model profile does not exist in the namespace. */
         MODEL,
+        /** The image is already owned by a live agent; every image has exactly one writer. */
+        IMAGE,
         /** The supervisor is not running. */
         NOT_RUNNING
     }

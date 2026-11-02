@@ -49,7 +49,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
- * The default {@link Supervisor}: a supervision tree with a synthetic root at pid {@code 0}.
+ * The default {@link Supervisor}: a supervision tree rooted at the pid-0 super agent.
  *
  * <p>Every agent is a node: it has exactly one parent, exactly one namespace, a capability set that
  * is the intersection of what it requested, what its parent holds, and what the namespace grants,
@@ -66,7 +66,7 @@ public final class SupervisorImpl implements Supervisor {
     private static final Logger log = LoggerFactory.getLogger(SupervisorImpl.class);
     private static final Logger audit = LoggerFactory.getLogger("ch.predmet.jarness.supervisor");
 
-    /** The synthetic root: it is not an agent, but it is the parent of every root agent. */
+    /** The platform super agent and parent of every ordinary root agent. */
     public static final long ROOT_PID = 0L;
 
     private final Supplier<JarnessRuntime> runtime;
@@ -266,6 +266,7 @@ public final class SupervisorImpl implements Supervisor {
                         "agent " + parentPid + " may not cross from namespace " + parent.namespaceId()
                                 + " into " + nsId, parentPid, nsId, manifest);
             }
+            validateResumeAdmission(request, namespace, parentPid, manifest);
             int depth = parent == null ? 1 : parent.depth() + 1;
             if (maxDepth > 0 && depth > maxDepth) {
                 throw deny(SpawnDeniedException.Reason.DEPTH,
@@ -417,6 +418,40 @@ public final class SupervisorImpl implements Supervisor {
         return template;
     }
 
+    /**
+     * Enforce image ownership before constructing a second worker for the same durable state.
+     * Namespace is part of the image identity: force-resume may degrade dependencies, but it is not
+     * a cross-namespace migration operation.
+     */
+    private void validateResumeAdmission(AgentRequest request, Namespace namespace, long parentPid,
+                                         AgentManifest manifest) {
+        if (request == null || request.sessionId() == null || request.sessionId().isBlank()) {
+            return;
+        }
+        String sessionId = request.sessionId();
+        Optional<ImageMetadata> prior = namespace.store().image(sessionId);
+        if (prior.isPresent() && !namespace.id().equals(prior.get().namespace())) {
+            throw deny(SpawnDeniedException.Reason.NAMESPACE,
+                    "image " + sessionId + " belongs to namespace " + prior.get().namespace()
+                            + ", not " + namespace.id(), parentPid, namespace.id(), manifest);
+        }
+        for (Agent existing : agents.values()) {
+            if (!existing.namespaceId().equals(namespace.id())
+                    || !sessionId.equals(existing.session().id())) {
+                continue;
+            }
+            AgentState state = existing.state();
+            boolean reusable = state == AgentState.STOPPED || state == AgentState.FAILED
+                    || state == AgentState.SUSPENDED;
+            if (!reusable) {
+                throw deny(SpawnDeniedException.Reason.IMAGE,
+                        "image " + sessionId + " is already owned by live agent " + existing.pid()
+                                + " in state " + state + "; stop or suspend it before resume",
+                        parentPid, namespace.id(), manifest);
+            }
+        }
+    }
+
     private CapabilitySet assignCapIds(CapabilitySet effective, CapabilitySet parentCaps, long pid) {
         if (effective.isEmpty()) {
             return effective;
@@ -464,19 +499,6 @@ public final class SupervisorImpl implements Supervisor {
     }
 
     // ------------------------------------------------------------- registry
-
-    @Override
-    public void register(Agent agent) {
-        Objects.requireNonNull(agent, "agent");
-        requireRunning();
-        lock.lock();
-        try {
-            agents.put(agent.pid(), agent);
-            children.computeIfAbsent(agent.parentPid(), key -> new ArrayList<>()).add(agent.pid());
-        } finally {
-            lock.unlock();
-        }
-    }
 
     @Override
     public boolean unregister(String agentId) {

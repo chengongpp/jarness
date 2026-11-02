@@ -95,8 +95,11 @@ public record Budget(long tokensLeft, Instant deadline, int toolSlots, int maxSp
         if (parent.deadline != null && (deadline == null || deadline.isAfter(parent.deadline))) {
             return false;
         }
+        if (parent.toolSlots >= 0 && (toolSlots < 0 || toolSlots > parent.toolSlots)) {
+            return false;
+        }
         return parent.maxSpawnDepth < 0
-                || (maxSpawnDepth >= 0 && maxSpawnDepth <= parent.maxSpawnDepth);
+                || (maxSpawnDepth >= 0 && maxSpawnDepth < parent.maxSpawnDepth);
     }
 
     /**
@@ -106,7 +109,7 @@ public record Budget(long tokensLeft, Instant deadline, int toolSlots, int maxSp
      */
     public Budget childDefault() {
         int depth = maxSpawnDepth < 0 ? -1 : Math.max(0, maxSpawnDepth - 1);
-        return new Budget(tokensLeft, deadline, -1, depth);
+        return new Budget(tokensLeft, deadline, toolSlots, depth);
     }
 
     /** @return a copy with a different token allowance. */
