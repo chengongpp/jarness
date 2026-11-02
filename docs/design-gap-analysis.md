@@ -4,6 +4,9 @@
 > 结论：**存在系统性冲突**，不是补几个接口能对齐的。现有实现对应的是旧 draft 的「平面 supervisor + 全局 store + JVM 内工具」；v1.3 要求「监督树 + namespace + capability + 镜像事务 + daemon 外 executor」。
 >
 > 处理原则：以设计文档为准；0.1.x 允许破坏 API；可复用的层（provider、mod loader、tool、TUI/CLI）保留并逐步改造。
+>
+> **2026-11-02 v1.4**：IPC 改回 daemon JVM 内的 `Shm` / `agent_send`，工作目录改为 namespace cwd；
+> 逐项实现与测试见文末 §14。
 
 ## 0. 总账
 
