@@ -38,7 +38,7 @@ public final class GlobTool implements Tool {
         params.put("pattern", ToolParameter.required("string",
                 "Glob pattern, e.g. \"**/*.ts\". A pattern with no \"/\" matches the basename at any depth."));
         params.put("path", ToolParameter.optional("string",
-                "Directory to search in. Defaults to the agent workspace."));
+                "Directory to search in. Defaults to the namespace cwd."));
         return params;
     }
 

@@ -191,7 +191,8 @@ class SupervisorTreeTest {
     void crossingNamespacesRequiresTheNamespaceCapability() throws IOException {
         try (JarnessRuntime runtime = runtime(null)) {
             runtime.namespaces().create(new NamespaceSpec("other",
-                    NamespaceMetadata.of("other", CapabilitySet.grant("ns.other",
+                    NamespaceMetadata.of("other", base.resolve("other-cwd"),
+                            CapabilitySet.grant("ns.other",
                             List.of(CapabilityRequest.of(CapKind.FS_READ)))), runtime.sessions(), "void", ""));
             long rootPid = root(runtime, "lead");
 
@@ -286,7 +287,8 @@ class SupervisorTreeTest {
         SqliteSessionStore otherStore = new SqliteSessionStore("jdbc:sqlite:" + otherDb);
         try {
             Namespace other = runtime.namespaces().create(new NamespaceSpec("iso",
-                    NamespaceMetadata.of("iso", CapabilitySet.grant("ns.iso",
+                    NamespaceMetadata.of("iso", base.resolve("iso-cwd"),
+                            CapabilitySet.grant("ns.iso",
                             List.of(CapabilityRequest.of(CapKind.FS_READ), CapabilityRequest.of(CapKind.SPAWN)))),
                     otherStore, "void", ""));
             long pid = runtime.supervisor().spawn(0, "iso",

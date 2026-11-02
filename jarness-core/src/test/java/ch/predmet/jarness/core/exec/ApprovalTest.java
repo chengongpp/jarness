@@ -35,10 +35,10 @@ class ApprovalTest {
                 policy = "ask"
                 """)) {
             runtime.approvals().register("test", (request, timeout) -> ApprovalDecision.ALLOW);
-            Path workspace = base.resolve("ws-allow");
-            TurnResult result = run(runtime, workspace);
+            Agent agent = spawn(runtime, "approval-allow");
+            TurnResult result = run(agent);
             assertEquals(TurnState.COMPLETED, result.state(), result.error());
-            assertEquals("from the executor", Files.readString(workspace.resolve("relay.txt")));
+            assertEquals("from the executor", Files.readString(agent.workspace().resolve("relay.txt")));
         }
     }
 
@@ -50,11 +50,10 @@ class ApprovalTest {
                 policy = "ask"
                 """)) {
             runtime.approvals().register("test", (request, timeout) -> ApprovalDecision.DENY);
-            Path workspace = base.resolve("ws-deny");
-            Agent agent = spawn(runtime, workspace);
+            Agent agent = spawn(runtime, "approval-deny");
             TurnResult result = agent.submit("write the file").get(30, TimeUnit.SECONDS);
             assertEquals(TurnState.COMPLETED, result.state(), result.error());
-            assertFalse(Files.exists(workspace.resolve("relay.txt")));
+            assertFalse(Files.exists(agent.workspace().resolve("relay.txt")));
             assertTrue(agent.session().messages().stream()
                     .flatMap(m -> m.toolResults().stream())
                     .anyMatch(r -> r.text().contains("approval denied")), "expected an approval denial");
@@ -64,27 +63,26 @@ class ApprovalTest {
     @Test
     void neverRunsOnlyAllowlistedTools() throws Exception {
         assumeExecutor();
-        Path workspace = base.resolve("ws-never");
         try (JarnessRuntime runtime = runtime("""
                 [approval]
                 policy = "never"
                 allow = ["write"]
-                """)) {
-            TurnResult result = run(runtime, workspace);
+                """, "ws-never")) {
+            Agent agent = spawn(runtime, "approval-never");
+            TurnResult result = run(agent);
             assertEquals(TurnState.COMPLETED, result.state(), result.error());
-            assertEquals("from the executor", Files.readString(workspace.resolve("relay.txt")));
+            assertEquals("from the executor", Files.readString(agent.workspace().resolve("relay.txt")));
         }
 
-        Path blocked = base.resolve("ws-blocked");
         try (JarnessRuntime runtime = runtime("""
                 [approval]
                 policy = "never"
                 allow = ["read"]
-                """)) {
-            Agent agent = spawn(runtime, blocked);
+                """, "ws-blocked")) {
+            Agent agent = spawn(runtime, "approval-blocked");
             TurnResult result = agent.submit("write the file").get(30, TimeUnit.SECONDS);
             assertEquals(TurnState.COMPLETED, result.state(), result.error());
-            assertFalse(Files.exists(blocked.resolve("relay.txt")));
+            assertFalse(Files.exists(agent.workspace().resolve("relay.txt")));
             assertTrue(agent.session().messages().stream()
                     .flatMap(m -> m.toolResults().stream())
                     .anyMatch(r -> r.text().contains("blocked by approval policy")));
@@ -92,16 +90,21 @@ class ApprovalTest {
     }
 
     private JarnessRuntime runtime(String extra) throws Exception {
+        return runtime(extra, "ws");
+    }
+
+    private JarnessRuntime runtime(String extra, String cwd) throws Exception {
         JarnessLayout layout = JarnessLayout.of(base);
         Files.createDirectories(layout.configDir());
         Files.writeString(layout.configFile(), """
                 [defaults]
                 template = "standard"
+                cwd = "%s"
 
                 [execution]
                 mode = "relay"
 
-                """ + extra);
+                """.formatted(cwd) + extra);
         JarnessRuntime runtime = Jarness.Builder.at(base).build();
         runtime.start();
         runtime.providers().register(new ScriptedProvider());
@@ -109,12 +112,12 @@ class ApprovalTest {
         return runtime;
     }
 
-    private Agent spawn(JarnessRuntime runtime, Path workspace) {
-        return runtime.spawn(AgentRequest.builder("standard").name("approval").workspace(workspace).build());
+    private Agent spawn(JarnessRuntime runtime, String name) {
+        return runtime.spawn(AgentRequest.builder("standard").name(name).build());
     }
 
-    private TurnResult run(JarnessRuntime runtime, Path workspace) throws Exception {
-        return spawn(runtime, workspace).submit("write the file").get(30, TimeUnit.SECONDS);
+    private TurnResult run(Agent agent) throws Exception {
+        return agent.submit("write the file").get(30, TimeUnit.SECONDS);
     }
 
     private static void assumeExecutor() {

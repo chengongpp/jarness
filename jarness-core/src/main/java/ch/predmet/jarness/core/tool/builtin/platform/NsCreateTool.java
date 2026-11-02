@@ -12,6 +12,7 @@ import ch.predmet.jarness.api.tool.ToolOutcome;
 import ch.predmet.jarness.api.tool.ToolParameter;
 import ch.predmet.jarness.api.tool.ToolSpec;
 
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -27,6 +28,8 @@ public final class NsCreateTool implements Tool {
         params.put("id", ToolParameter.required("string", "Namespace id."));
         params.put("template", ToolParameter.optional("string", "Default template id; defaults to the default namespace's."));
         params.put("model", ToolParameter.optional("string", "Model selector, provider/model or bare model id."));
+        params.put("cwd", ToolParameter.optional("string",
+                "Shared working directory. Defaults to <base>/workspaces/<id>."));
         return params;
     }
 
@@ -43,8 +46,13 @@ public final class NsCreateTool implements Tool {
         ModelProfile model = invocation.findString("model")
                 .map(selector -> ModelProfile.of(ModelRef.parse(selector)))
                 .orElse(base.metadata().model());
+        Path cwd = invocation.findString("cwd")
+                .map(Path::of)
+                .map(path -> path.isAbsolute() ? path : ctx.runtime().layout().baseDir().resolve(path))
+                .orElseGet(() -> ctx.runtime().layout().workspacesDir().resolve(id))
+                .toAbsolutePath().normalize();
         NamespaceMetadata metadata = new NamespaceMetadata(
-                id, Map.of(), model, Map.of(), base.metadata().policies(), base.metadata().defaults());
+                id, cwd, Map.of(), model, Map.of(), base.metadata().policies(), base.metadata().defaults());
         Namespace created = ctx.runtime().namespaces().create(new NamespaceSpec(
                 id, metadata, base.store(), template, ""));
         return ToolOutcome.ok("created namespace " + created.id() + " (template " + template + ")");

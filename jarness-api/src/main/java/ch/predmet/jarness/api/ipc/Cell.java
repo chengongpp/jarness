@@ -3,7 +3,7 @@ package ch.predmet.jarness.api.ipc;
 import java.time.Instant;
 
 /**
- * One versioned cell of a blackboard.
+ * One versioned cell of a {@link Shm}.
  *
  * @param name      cell name
  * @param version   monotonically increasing version, starting at 1; 0 means absent

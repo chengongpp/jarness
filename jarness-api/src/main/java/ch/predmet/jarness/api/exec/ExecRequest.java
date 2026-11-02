@@ -10,7 +10,7 @@ import java.util.Map;
  * One tool invocation handed to an execution provider.
  *
  * <p>The request carries everything the executor needs to enforce its side of the contract: the
- * tool name on the executor, the parsed arguments, the deadline, the calling agent's workspace and
+ * tool name on the executor, the parsed arguments, the deadline, the calling agent's namespace cwd and
  * sandbox, and the capability view. The daemon never asks the executor to trust JVM state.</p>
  *
  * @param callId          call id, unique within the runtime
@@ -19,7 +19,7 @@ import java.util.Map;
  * @param deadline        absolute deadline, or {@code null}
  * @param mode            sync or async
  * @param idempotencyKey  key used to deduplicate retries, or {@code null}
- * @param workspace       calling agent's workspace
+ * @param workspace       calling agent's namespace cwd
  * @param sandbox         sandbox mode name
  * @param capabilities    capability view granted to the call
  * @param namespace       calling agent's namespace

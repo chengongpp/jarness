@@ -15,7 +15,7 @@ import java.nio.file.Path;
  * @param maxTokens              default {@code max_tokens} for a completion
  * @param temperature            default sampling temperature
  * @param toolOutputMaxChars     truncation cap applied to a single tool observation
- * @param workspaceRoot          root under which per-agent workspaces are created
+ * @param workspaceRoot          root under which namespace cwds are created
  * @param logLevel               root log level for the console appender
  * @param autoStartSupervisor    whether {@code Jarness.start()} starts the supervisor by itself
  * @param maxDepth               maximum supervision-tree depth, {@code 0} for unbounded

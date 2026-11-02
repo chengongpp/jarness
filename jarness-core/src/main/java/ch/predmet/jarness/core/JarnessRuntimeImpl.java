@@ -116,7 +116,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         this.jobRegistry = new JobRegistryImpl();
         this.executionRegistry = new ExecutionRegistryImpl();
         this.approvalRegistry = new ApprovalRegistryImpl();
-        this.ipcRegistry = new IpcRegistryImpl();
+        this.ipcRegistry = new IpcRegistryImpl(layout.imageDb());
         this.registry = new RegistryImpl(() -> this);
         this.stores = new LinkedHashMap<>();
         this.sessionStore = store(config.sessionStoreUrl());
@@ -278,7 +278,6 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
                 request.templateId(),
                 request.template(),
                 request.name(),
-                request.workspace(),
                 request.sessionId(),
                 request.systemPrompt(),
                 request.toolNames(),
@@ -424,8 +423,9 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
                 ? null
                 : ModelProfile.of(new ModelRef(config.defaultProvider(), config.defaultModel()));
 
+        Path defaultCwd = namespaceCwd(config.raw().table("defaults"), Namespace.DEFAULT_ID);
         NamespaceMetadata defaultMetadata = new NamespaceMetadata(
-                "default", Map.of(), defaultModel, Map.of(), defaultPolicies(),
+                "default", defaultCwd, Map.of(), defaultModel, Map.of(), defaultPolicies(),
                 CapabilitySet.grant("ns.default", defaults));
         Namespace defaultNamespace = new NamespaceImpl(Namespace.DEFAULT_ID,
                 new NamespaceSpec(Namespace.DEFAULT_ID, defaultMetadata, defaultStore,
@@ -445,12 +445,32 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
                     .orElse(defaultModel);
             CapabilitySet caps = parseCapabilities("ns." + id, view.stringList("capabilities"), defaults);
             String template = view.string("template", config.defaultTemplate());
+            Path cwd = namespaceCwd(view, id);
             NamespaceMetadata metadata = new NamespaceMetadata(
-                    view.string("name", id), Map.of(), model, Map.of(), namespacePolicies(view), caps);
+                    view.string("name", id), cwd, Map.of(), model, Map.of(), namespacePolicies(view), caps);
             registry.create(new NamespaceSpec(id, metadata, store, blankToNull(template), ""));
-            log.info("namespace {} ready (store {}, template {}, caps {})", id, storeUrl, template, caps.kinds());
+            log.info("namespace {} ready (store {}, cwd {}, template {}, caps {})",
+                    id, storeUrl, cwd, template, caps.kinds());
         }
         return registry;
+    }
+
+    /**
+     * Resolve a namespace's shared working directory.
+     *
+     * <p>An explicit {@code cwd} in the namespace table wins; relative paths are anchored at the
+     * runtime base directory. Otherwise namespaces get {@code <workspace_root>/<id>}.</p>
+     */
+    private Path namespaceCwd(ConfigView view, String namespaceId) {
+        String configured = view.string("cwd", "").trim();
+        if (!configured.isEmpty()) {
+            Path path = Path.of(configured);
+            if (!path.isAbsolute()) {
+                path = config.layout().baseDir().resolve(path);
+            }
+            return path.toAbsolutePath().normalize();
+        }
+        return config.workspaceRoot().resolve(namespaceId).toAbsolutePath().normalize();
     }
 
     private PolicySet defaultPolicies() {

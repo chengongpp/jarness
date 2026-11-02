@@ -27,7 +27,7 @@ public interface ToolContext {
     /** @return the running runtime. */
     JarnessRuntime runtime();
 
-    /** @return the agent's working directory; relative paths resolve against it. */
+    /** @return the namespace cwd; relative paths resolve against it. */
     Path workspace();
 
     /** @return the capabilities the calling agent currently holds. */
@@ -62,9 +62,9 @@ public interface ToolContext {
     }
 
     /**
-     * Resolve a model-supplied path against the workspace.
+     * Resolve a model-supplied path against the namespace cwd.
      *
-     * @param path absolute or workspace-relative path
+     * @param path absolute or cwd-relative path
      * @return the normalized absolute path
      */
     default Path resolve(String path) {
@@ -76,7 +76,7 @@ public interface ToolContext {
     /**
      * Resolve a path and enforce the sandbox when the caller intends to write.
      *
-     * @param path   absolute or workspace-relative path
+     * @param path   absolute or cwd-relative path
      * @param intent {@code true} when the caller will modify the target
      * @return the normalized absolute path
      * @throws ToolException when the sandbox forbids the write
@@ -96,7 +96,7 @@ public interface ToolContext {
                 Path root = workspace().toAbsolutePath().normalize();
                 if (!resolved.startsWith(root)) {
                     throw new ToolException("sandbox mode is workspace-write: " + resolved
-                            + " is outside the agent workspace " + root);
+                            + " is outside the namespace cwd " + root);
                 }
                 return resolved;
             }

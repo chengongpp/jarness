@@ -8,34 +8,49 @@ import java.util.Optional;
 /**
  * The runtime's collaboration primitive table.
  *
- * <p>Handles are capabilities: creating one requires the {@code IPC} capability, and closing the
- * owner's pid closes every handle it created. Boards and channels live in the daemon; cross-daemon
- * IPC is out of scope for the single-node runtime.</p>
+ * <p>Shm handles are capabilities: creating or attaching one requires the {@code ipc} capability.
+ * Shms are namespace-scoped and persist their cells in the local store; a daemon restart keeps the
+ * data, while channels are in-memory rendezvous handles and do not survive it.</p>
  */
 public interface IpcRegistry {
 
     /**
-     * Create a blackboard owned by an agent.
+     * Create a shm owned by an agent.
      *
      * @param owner owner
-     * @param id    board id
-     * @return the board
+     * @param id    shm id, unique within the owner's namespace
+     * @return the shm
+     * @throws IllegalStateException when the id already exists in that namespace
      */
-    Blackboard createBoard(Agent owner, String id);
-
-    /** @return the board with this id, if any. */
-    Optional<Blackboard> board(String id);
-
-    /** @return every board id. */
-    List<String> boards();
+    Shm createShm(Agent owner, String id);
 
     /**
-     * Remove a board.
+     * Attach to an existing shm, creating it when absent.
      *
-     * @param id board id
-     * @return whether a board was removed
+     * @param owner owner
+     * @param id    shm id
+     * @return the shm
      */
-    boolean removeBoard(String id);
+    Shm attachShm(Agent owner, String id);
+
+    /**
+     * @param namespaceId namespace id
+     * @param id          shm id
+     * @return the shm, if any
+     */
+    Optional<Shm> findShm(String namespaceId, String id);
+
+    /** @return every shm id in a namespace. */
+    List<String> shms(String namespaceId);
+
+    /**
+     * Remove a shm and its persisted cells.
+     *
+     * @param namespaceId namespace id
+     * @param id          shm id
+     * @return whether a shm was removed
+     */
+    boolean removeShm(String namespaceId, String id);
 
     /**
      * Create a channel owned by an agent.
@@ -61,12 +76,15 @@ public interface IpcRegistry {
     boolean removeChannel(String id);
 
     /**
-     * Close every board and channel owned by a pid.
+     * Close every channel owned by a pid.
+     *
+     * <p>Shms are shared namespace state rather than an agent's private handle: their creator
+     * exiting does not erase the cells. Use {@link #removeShm(String, String)} to delete one.</p>
      *
      * @param pid owner pid
      */
     void closeOwned(long pid);
 
-    /** Close every board and channel. */
+    /** Close every shm handle and channel. Persisted shm cells stay in the store. */
     void close();
 }

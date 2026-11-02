@@ -44,7 +44,7 @@ public final class GrepTool implements Tool {
         Map<String, ToolParameter> params = new LinkedHashMap<>();
         params.put("pattern", ToolParameter.required("string", "Regular expression to search for."));
         params.put("path", ToolParameter.optional("string",
-                "File or directory to search. Defaults to the agent workspace."));
+                "File or directory to search. Defaults to the namespace cwd."));
         params.put("include", ToolParameter.optional("string",
                 "Glob filter on file names, e.g. \"*.java\"."));
         return params;

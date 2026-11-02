@@ -29,12 +29,14 @@ import ch.predmet.jarness.core.tool.builtin.WebFetchTool;
 import ch.predmet.jarness.core.tool.builtin.WebSearchTool;
 import ch.predmet.jarness.core.tool.builtin.WriteFileTool;
 import ch.predmet.jarness.core.tool.builtin.platform.AgentKillTool;
+import ch.predmet.jarness.core.tool.builtin.platform.AgentSendTool;
 import ch.predmet.jarness.core.tool.builtin.platform.AgentSignalTool;
 import ch.predmet.jarness.core.tool.builtin.platform.AgentTreeTool;
 import ch.predmet.jarness.core.tool.builtin.platform.DaemonStatusTool;
 import ch.predmet.jarness.core.tool.builtin.platform.NsCreateTool;
 import ch.predmet.jarness.core.tool.builtin.platform.NsListTool;
 import ch.predmet.jarness.core.tool.builtin.platform.NsRemoveTool;
+import ch.predmet.jarness.core.tool.builtin.platform.ShmTool;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -106,6 +108,12 @@ public final class CoreMod implements JarnessMod {
                     ic.tools().register(CapabilityTool.of(new ModLoadTool(), CapKind.EXTEND));
                     ic.tools().register(CapabilityTool.of(new TemplateRegisterTool(), CapKind.EXTEND));
                     ic.tools().register(CapabilityTool.of(new AgentSpawnTool(), CapKind.SPAWN));
+                });
+
+        ctx.instruments().register("tools.ipc", true, 235,
+                "In-JVM collaboration tools: shared memory and direct mailbox delivery.", ic -> {
+                    ic.tools().register(CapabilityTool.of(new ShmTool(), CapKind.IPC));
+                    ic.tools().register(CapabilityTool.of(new AgentSendTool(), CapKind.IPC));
                 });
 
         ctx.instruments().register("tools.platform", true, 240,

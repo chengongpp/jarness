@@ -24,6 +24,7 @@ public final class NsListTool implements Tool {
             out.append(ns.id())
                     .append(ns.isDefault() ? " (default)" : "")
                     .append("  template=").append(ns.defaultTemplateId())
+                    .append("  cwd=").append(ns.cwd())
                     .append("  caps=").append(ns.metadata().defaults().kinds())
                     .append('\n');
         }

@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * End-to-end: a scripted model asks for {@code write}, the daemon relays it to the Rust executor,
- * and the file appears in the agent workspace.
+ * and the file appears in the namespace cwd.
  */
 class RelayAgentTurnTest {
 
@@ -52,15 +52,13 @@ class RelayAgentTurnTest {
                 runtime.providers().register(new ScriptedProvider());
                 runtime.providers().setDefault(new ModelRef(ScriptedProvider.ID, ScriptedProvider.MODEL));
 
-                Path workspace = base.resolve("ws");
                 Agent agent = runtime.spawn(AgentRequest.builder("standard")
                         .name("relay-agent")
-                        .workspace(workspace)
                         .build());
                 TurnResult result = agent.submit("write the file").get(30, TimeUnit.SECONDS);
                 assertEquals(TurnState.COMPLETED, result.state(), result.error());
                 assertEquals("done", result.output());
-                assertEquals("from the executor", Files.readString(workspace.resolve("relay.txt")));
+                assertEquals("from the executor", Files.readString(agent.workspace().resolve("relay.txt")));
                 assertTrue(agent.session().messages().stream()
                         .anyMatch(m -> !m.toolResults().isEmpty()), "expected a tool observation");
             }

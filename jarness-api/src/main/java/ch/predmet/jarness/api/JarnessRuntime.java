@@ -21,7 +21,6 @@ import ch.predmet.jarness.api.session.SessionStore;
 import ch.predmet.jarness.api.supervisor.Supervisor;
 import ch.predmet.jarness.api.tool.ToolRegistry;
 
-import java.nio.file.Path;
 import java.util.Optional;
 
 /**
@@ -123,11 +122,10 @@ public interface JarnessRuntime extends AutoCloseable {
      *
      * @param templateId template id
      * @param name       agent name, or {@code null}
-     * @param workspace  working directory, or {@code null} for a fresh one
      * @return the running agent
      */
-    default Agent spawn(String templateId, String name, Path workspace) {
-        return spawn(AgentRequest.builder(templateId).name(name).workspace(workspace).build());
+    default Agent spawn(String templateId, String name) {
+        return spawn(AgentRequest.builder(templateId).name(name).build());
     }
 
     /** @return the agent with this id, if any agent is registered under it. */

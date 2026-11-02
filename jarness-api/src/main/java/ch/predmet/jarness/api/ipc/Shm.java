@@ -6,16 +6,21 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 /**
- * A named shared state area with versioned cells and CAS writes.
+ * A named shared-memory area: versioned cells with CAS writes, kept in daemon memory and persisted
+ * to the local store.
  *
- * <p>The blackboard is the shared-state primitive; protocols such as task boards or claim queues are
- * left to mods. A handle is a capability: possessing it is what allows access, and it is revoked
- * when its owner exits.</p>
+ * <p>Shm is the shared-state primitive; protocols such as task boards or claim queues are left to
+ * mods. A shm is scoped to one namespace: agents in other namespaces cannot see it even when they
+ * know its name. Possessing a handle is what allows access; the runtime checks the {@code ipc}
+ * capability before it hands one out.</p>
  */
-public interface Blackboard extends AutoCloseable {
+public interface Shm extends AutoCloseable {
 
-    /** @return board id. */
+    /** @return shm id. */
     String id();
+
+    /** @return the namespace that owns this shm. */
+    String namespaceId();
 
     /**
      * @param cell cell name
@@ -73,7 +78,7 @@ public interface Blackboard extends AutoCloseable {
      */
     AutoCloseable lock(String cell);
 
-    /** @return whether the board is closed. */
+    /** @return whether the handle is closed. */
     boolean closed();
 
     @Override

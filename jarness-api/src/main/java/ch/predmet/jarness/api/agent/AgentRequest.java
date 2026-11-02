@@ -4,7 +4,6 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.kernel.Budget;
 import ch.predmet.jarness.api.provider.ModelRef;
 
-import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +22,6 @@ import java.util.Map;
  * @param templateId    registered template id, or {@code null} when {@code template} is supplied
  * @param template      inline template, or {@code null} when {@code templateId} is used
  * @param name          agent name, or {@code null} to derive one
- * @param workspace     working directory, or {@code null} for a fresh directory under the workspace root
  * @param sessionId     session to resume, or {@code null} for a new session
  * @param systemPrompt  system prompt override, or {@code null}
  * @param toolNames     tool override; empty means "as the template says"
@@ -39,7 +37,6 @@ public record AgentRequest(
         String templateId,
         AgentTemplate template,
         String name,
-        Path workspace,
         String sessionId,
         String systemPrompt,
         List<String> toolNames,
@@ -77,7 +74,6 @@ public record AgentRequest(
         private String templateId;
         private AgentTemplate template;
         private String name;
-        private Path workspace;
         private String sessionId;
         private String systemPrompt;
         private List<String> toolNames = List.of();
@@ -103,12 +99,6 @@ public record AgentRequest(
         /** @return this builder. */
         public Builder name(String value) {
             this.name = value;
-            return this;
-        }
-
-        /** @return this builder. */
-        public Builder workspace(Path value) {
-            this.workspace = value;
             return this;
         }
 
@@ -186,7 +176,7 @@ public record AgentRequest(
 
         /** @return the built request. */
         public AgentRequest build() {
-            return new AgentRequest(templateId, template, name, workspace, sessionId, systemPrompt, toolNames,
+            return new AgentRequest(templateId, template, name, sessionId, systemPrompt, toolNames,
                     model, parentPid, namespaceId, capabilities, budget, forceResume, metadata);
         }
     }

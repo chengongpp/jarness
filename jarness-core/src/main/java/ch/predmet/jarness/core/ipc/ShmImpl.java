@@ -1,11 +1,9 @@
 package ch.predmet.jarness.core.ipc;
 
-import ch.predmet.jarness.api.ipc.Blackboard;
 import ch.predmet.jarness.api.ipc.Cell;
+import ch.predmet.jarness.api.ipc.Shm;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -16,25 +14,47 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
- * Versioned, CAS-friendly blackboard.
+ * Versioned, CAS-friendly shared memory.
+ *
+ * <p>Reads hit the in-memory map; writes and deletes are written through to
+ * {@link SqliteShmStore} before the in-memory version changes, so a committed cell survives a
+ * runtime restart. The lock table and watchers are deliberately process-local.</p>
  */
-final class BlackboardImpl implements Blackboard {
+final class ShmImpl implements Shm {
 
     private final String id;
-    private final long ownerPid;
+    private final String namespaceId;
+    private final long creatorPid;
+    private final SqliteShmStore store;
     private final Map<String, Cell> cells = new ConcurrentHashMap<>();
     private final Map<String, List<Consumer<Cell>>> watchers = new ConcurrentHashMap<>();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    private volatile long actorPid;
     private volatile boolean closed;
 
-    BlackboardImpl(String id, long ownerPid) {
+    ShmImpl(String id, String namespaceId, long creatorPid, SqliteShmStore store,
+            Map<String, Cell> initial) {
         this.id = id;
-        this.ownerPid = ownerPid;
+        this.namespaceId = namespaceId;
+        this.creatorPid = creatorPid;
+        this.actorPid = creatorPid;
+        this.store = store;
+        this.cells.putAll(initial);
+    }
+
+    /** Bind the next mutation to the agent that attached this handle. */
+    synchronized void actor(long pid) {
+        this.actorPid = pid;
     }
 
     @Override
     public String id() {
         return id;
+    }
+
+    @Override
+    public String namespaceId() {
+        return namespaceId;
     }
 
     @Override
@@ -48,7 +68,8 @@ final class BlackboardImpl implements Blackboard {
         checkOpen();
         Cell current = cells.get(cell);
         long version = current == null ? 1 : current.version() + 1;
-        Cell next = new Cell(cell, version, value, Instant.now(), ownerPid);
+        Cell next = new Cell(cell, version, value, Instant.now(), actorPid);
+        persist(next);
         cells.put(cell, next);
         notifyWatchers(next);
         return next;
@@ -63,7 +84,8 @@ final class BlackboardImpl implements Blackboard {
             return Optional.empty();
         }
         long version = expectedVersion + 1;
-        Cell next = new Cell(cell, version, value, Instant.now(), ownerPid);
+        Cell next = new Cell(cell, version, value, Instant.now(), actorPid);
+        persist(next);
         cells.put(cell, next);
         notifyWatchers(next);
         return Optional.of(next);
@@ -72,21 +94,27 @@ final class BlackboardImpl implements Blackboard {
     @Override
     public synchronized boolean delete(String cell) {
         checkOpen();
-        Cell removed = cells.remove(cell);
+        Cell removed = cells.get(cell);
         if (removed == null) {
             return false;
         }
-        notifyWatchers(new Cell(cell, removed.version() + 1, null, Instant.now(), ownerPid));
+        if (store != null) {
+            store.deleteCell(namespaceId, id, cell);
+        }
+        cells.remove(cell);
+        notifyWatchers(new Cell(cell, removed.version() + 1, null, Instant.now(), actorPid));
         return true;
     }
 
     @Override
     public Map<String, Cell> snapshot() {
+        checkOpen();
         return Map.copyOf(cells);
     }
 
     @Override
     public Set<String> cells() {
+        checkOpen();
         return Set.copyOf(cells.keySet());
     }
 
@@ -115,6 +143,19 @@ final class BlackboardImpl implements Blackboard {
         };
     }
 
+    private void persist(Cell cell) {
+        if (store != null) {
+            store.put(namespaceId, id, cell);
+        }
+    }
+
+    /** Delete the persisted board; called only through {@link IpcRegistryImpl#removeShm}. */
+    void deletePersisted() {
+        if (store != null) {
+            store.delete(namespaceId, id);
+        }
+    }
+
     private void notifyWatchers(Cell cell) {
         List<Consumer<Cell>> list = watchers.get(cell.name());
         if (list == null) {
@@ -124,14 +165,14 @@ final class BlackboardImpl implements Blackboard {
             try {
                 watcher.accept(cell);
             } catch (Throwable ignored) {
-                // a watcher must not break the board
+                // a watcher must not break shared memory
             }
         }
     }
 
     private void checkOpen() {
         if (closed) {
-            throw new IllegalStateException("blackboard " + id + " is closed");
+            throw new IllegalStateException("shm " + namespaceId + "/" + id + " is closed");
         }
     }
 
@@ -150,6 +191,6 @@ final class BlackboardImpl implements Blackboard {
 
     @Override
     public String toString() {
-        return "Blackboard[" + id + "]";
+        return "Shm[" + namespaceId + "/" + id + (creatorPid >= 0 ? ", creator=" + creatorPid : "") + "]";
     }
 }

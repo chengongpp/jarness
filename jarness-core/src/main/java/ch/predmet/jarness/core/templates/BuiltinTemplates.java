@@ -69,7 +69,7 @@ public final class BuiltinTemplates {
                         the main line of work focused.""")
                 .tools("read", "write", "edit", "delete", "glob", "grep", "bash",
                         "job_output", "job_kill", "job_list",
-                        "web_search", "web_fetch", "subagent")
+                        "web_search", "web_fetch", "subagent", "shm", "agent_send")
                 .build();
     }
 
@@ -86,7 +86,7 @@ public final class BuiltinTemplates {
                         resources.""")
                 .tools("read", "write", "edit", "delete", "glob", "grep", "bash",
                         "job_output", "job_kill", "job_list",
-                        "web_search", "web_fetch", "subagent",
+                        "web_search", "web_fetch", "subagent", "shm", "agent_send",
                         "mod_load", "template_register", "agent_spawn")
                 .dynamicMods(true)
                 .build();
@@ -104,7 +104,7 @@ public final class BuiltinTemplates {
                         what you changed and keep the tree healthy.""")
                 .tools("ns_list", "ns_create", "ns_remove",
                         "daemon_status", "agent_tree", "agent_kill", "agent_signal",
-                        "agent_spawn", "subagent")
+                        "agent_spawn", "subagent", "shm", "agent_send")
                 .build();
     }
 

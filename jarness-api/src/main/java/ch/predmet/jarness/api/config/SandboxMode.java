@@ -1,7 +1,7 @@
 package ch.predmet.jarness.api.config;
 
 /**
- * How far a tool may reach outside its agent workspace.
+ * How far a tool may reach outside its namespace cwd.
  *
  * <p>Jarness has no interactive approval prompt of its own by default: a runtime that is embedded as
  * a library must not block on a human. Instead the deployment declares a sandbox mode, and tools
@@ -12,7 +12,7 @@ public enum SandboxMode {
 
     /** Tools may read but never write, and {@code exec} runs in a read-only posture. */
     READ_ONLY("read-only"),
-    /** Writes are confined to the agent workspace. */
+    /** Writes are confined to the namespace cwd. */
     WORKSPACE_WRITE("workspace-write"),
     /** No restriction; the agent may touch any path the process can. */
     FULL_ACCESS("full-access");

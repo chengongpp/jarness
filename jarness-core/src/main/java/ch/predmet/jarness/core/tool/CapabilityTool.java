@@ -4,6 +4,8 @@ import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolInvocation;
+import ch.predmet.jarness.api.tool.ToolForm;
+import ch.predmet.jarness.api.tool.ToolMode;
 import ch.predmet.jarness.api.tool.ToolOutcome;
 import ch.predmet.jarness.api.tool.ToolSpec;
 
@@ -63,5 +65,20 @@ public final class CapabilityTool implements Tool {
     @Override
     public Set<CapKind> requiredCaps() {
         return required;
+    }
+
+    @Override
+    public ToolForm form() {
+        return delegate.form();
+    }
+
+    @Override
+    public ToolMode mode() {
+        return delegate.mode();
+    }
+
+    @Override
+    public String relayName() {
+        return delegate.relayName();
     }
 }

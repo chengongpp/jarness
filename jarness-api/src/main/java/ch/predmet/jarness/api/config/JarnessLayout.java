@@ -67,7 +67,7 @@ public record JarnessLayout(Path baseDir, Path modsDir, Path configDir, Path pre
         return imageDb();
     }
 
-    /** @return the default per-agent workspace root, {@code <base>/workspaces}. */
+    /** @return the namespace cwd root, {@code <base>/workspaces}. */
     public Path workspacesDir() {
         return baseDir.resolve("workspaces");
     }

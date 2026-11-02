@@ -11,7 +11,7 @@ import java.util.Map;
  * @param id         explicit session id, or {@code null} to generate one
  * @param agentId    owning agent id
  * @param title      initial title, or {@code null} for "untitled"
- * @param workspace  agent working directory
+ * @param workspace  namespace cwd shared by every agent in the namespace
  * @param templateId template the owning agent was created from
  * @param model      model binding, or {@code null}
  * @param metadata   extension metadata

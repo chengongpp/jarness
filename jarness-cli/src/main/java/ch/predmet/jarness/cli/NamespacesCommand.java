@@ -13,7 +13,7 @@ import java.util.concurrent.Callable;
  * {@code jarness namespaces}: list the namespaces the runtime will spawn into, with the capability
  * ceiling, model profile, and default template of each.
  */
-@Command(name = "namespaces", description = "List namespaces (capabilities, model profile, default template).")
+@Command(name = "namespaces", description = "List namespaces (cwd, capabilities, model profile, default template).")
 public final class NamespacesCommand implements Callable<Integer> {
 
     @Spec
@@ -28,10 +28,11 @@ public final class NamespacesCommand implements Callable<Integer> {
                 boolean known = namespace.defaultTemplateId() != null
                         && runtime.templates().contains(namespace.defaultTemplateId());
                 ModelProfile model = namespace.metadata().model();
-                System.out.printf("%-12s %-8s template=%-14s model=%-32s %s%n",
+                System.out.printf("%-12s %-8s template=%-14s cwd=%-28s model=%-32s %s%n",
                         namespace.id(),
                         namespace.isDefault() ? "default" : "",
                         template + (known ? "" : " (missing)"),
+                        namespace.cwd(),
                         model == null ? "<runtime default>" : model.model().toString(),
                         namespace.metadata().defaults().kinds());
                 if (!namespace.metadata().labels().isEmpty()) {

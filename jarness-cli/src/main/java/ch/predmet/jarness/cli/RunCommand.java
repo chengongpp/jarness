@@ -11,7 +11,6 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 
-import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Callable;
 
@@ -39,9 +38,6 @@ public final class RunCommand implements Callable<Integer> {
     @Option(names = {"-n", "--name"}, description = "Agent name.")
     String name;
 
-    @Option(names = {"-w", "--workspace"}, description = "Agent working directory. Default: a fresh one under the base dir.")
-    Path workspace;
-
     @Option(names = {"--session"}, description = "Resume an existing session/image by id.")
     String sessionId;
 
@@ -58,7 +54,7 @@ public final class RunCommand implements Callable<Integer> {
         try (JarnessRuntime runtime = Runtimes.build(spec)) {
             runtime.start();
             String templateId = template != null ? template : runtime.config().defaultTemplate();
-            AgentRequest.Builder builder = AgentRequest.builder(templateId).name(name).workspace(workspace);
+            AgentRequest.Builder builder = AgentRequest.builder(templateId).name(name);
             if (sessionId != null) {
                 builder.sessionId(sessionId);
             }

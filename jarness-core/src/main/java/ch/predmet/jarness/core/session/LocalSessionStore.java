@@ -669,21 +669,22 @@ public class LocalSessionStore implements SessionStore {
     @Override
     public synchronized void update(Session session) {
         checkOpen();
-        String sql = "UPDATE sessions SET title = ?, model_provider = ?, model_id = ?,"
+        String sql = "UPDATE sessions SET title = ?, workspace = ?, model_provider = ?, model_id = ?,"
                 + " updated_at = ?, metadata = ? WHERE id = ?";
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             ps.setString(1, session.title());
+            ps.setString(2, session.workspace() == null ? "" : session.workspace().toString());
             ModelRef model = session.model();
             if (model == null) {
-                ps.setNull(2, Types.VARCHAR);
                 ps.setNull(3, Types.VARCHAR);
+                ps.setNull(4, Types.VARCHAR);
             } else {
-                ps.setString(2, model.providerId());
-                ps.setString(3, model.modelId());
+                ps.setString(3, model.providerId());
+                ps.setString(4, model.modelId());
             }
-            ps.setLong(4, session.updatedAt().toEpochMilli());
-            ps.setString(5, MessageCodec.writeMetadata(session.metadata()));
-            ps.setString(6, session.id());
+            ps.setLong(5, session.updatedAt().toEpochMilli());
+            ps.setString(6, MessageCodec.writeMetadata(session.metadata()));
+            ps.setString(7, session.id());
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("failed to update session " + session.id(), e);

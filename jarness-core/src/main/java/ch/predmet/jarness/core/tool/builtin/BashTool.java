@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Foreground output is stdout, then a {@code [stderr]} section when non-empty, then the
  * mandatory {@code [exit code: N]} marker, truncated to the last ~60000 characters. The working
- * directory must resolve inside the agent workspace unless the sandbox is
+ * directory must resolve inside the namespace cwd unless the sandbox is
  * {@link SandboxMode#FULL_ACCESS}.</p>
  */
 public final class BashTool implements Tool {
@@ -45,7 +45,7 @@ public final class BashTool implements Tool {
         params.put("description", ToolParameter.optional("string",
                 "Clear, concise description of what this command does, 5-10 words."));
         params.put("workdir", ToolParameter.optional("string",
-                "Working directory. Defaults to the agent workspace."));
+                "Working directory. Defaults to the namespace cwd."));
         params.put("timeoutMs", ToolParameter.optional("integer",
                 "Timeout in milliseconds. Default 120000, cap 600000."));
         params.put("run_in_background", ToolParameter.optional("boolean",
@@ -91,7 +91,7 @@ public final class BashTool implements Tool {
                 .map(w -> ctx.resolve(w, false))
                 .orElse(workspace);
         if (ctx.sandbox() != SandboxMode.FULL_ACCESS && !workdir.startsWith(workspace)) {
-            throw new ToolException("workdir " + workdir + " is outside the agent workspace " + workspace);
+            throw new ToolException("workdir " + workdir + " is outside the namespace cwd " + workspace);
         }
         if (!Files.isDirectory(workdir)) {
             throw new ToolException("workdir is not a directory: " + workdir);

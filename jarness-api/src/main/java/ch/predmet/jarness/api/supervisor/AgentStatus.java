@@ -21,7 +21,7 @@ import java.time.Instant;
  * @param templateId       template id
  * @param state            lifecycle state
  * @param sessionId        current session id
- * @param workspace        working directory
+ * @param workspace        namespace cwd
  * @param turns            accepted turns
  * @param steps            provider steps executed
  * @param toolCalls        tool calls executed

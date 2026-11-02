@@ -12,7 +12,7 @@ import java.util.Objects;
  * <pre>{@code
  * try (JarnessRuntime runtime = Jarness.builder().preset("default").build()) {
  *     runtime.start();
- *     Agent agent = runtime.spawn("standard", "main", null);
+ *     Agent agent = runtime.spawn("standard", "main");
  *     TurnResult result = agent.submit("hello").join();
  * }
  * }</pre>

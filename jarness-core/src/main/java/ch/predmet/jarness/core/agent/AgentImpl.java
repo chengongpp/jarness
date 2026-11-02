@@ -194,17 +194,14 @@ public final class AgentImpl implements Agent {
         this.log = LoggerFactory.getLogger("ch.predmet.jarness.agent." + id);
         this.mailbox = new MailboxImpl(runtime.config().raw().integer("mailbox.capacity", 256));
 
-        Path ws = request.workspace() != null
-                ? request.workspace()
-                : runtime.layout().workspacesDir().resolve("agents").resolve(id);
-        ws = ws.toAbsolutePath().normalize();
+        Path ws = namespace.metadata().cwd();
         if (ws.equals(runtime.layout().baseDir())) {
-            throw new IllegalArgumentException("agent workspace must not be the runtime base directory");
+            throw new IllegalArgumentException("namespace cwd must not be the runtime base directory");
         }
         try {
             Files.createDirectories(ws);
         } catch (IOException e) {
-            throw new UncheckedIOException("could not create agent workspace " + ws, e);
+            throw new UncheckedIOException("could not create namespace cwd " + ws, e);
         }
         this.workspace = ws;
 
@@ -228,6 +225,10 @@ public final class AgentImpl implements Agent {
         } else {
             this.session = namespace.store().loadOrCreate(new SessionInit(
                     request.sessionId(), id, null, workspace, template.id(), initialModel(), sessionMetadata));
+        }
+
+        if (session.workspace() == null || !session.workspace().toAbsolutePath().normalize().equals(ws)) {
+            session.rebindWorkspace(ws);
         }
 
         if (prior.isPresent() && request.budget() == null) {

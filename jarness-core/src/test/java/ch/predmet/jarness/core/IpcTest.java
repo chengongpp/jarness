@@ -7,9 +7,12 @@ import ch.predmet.jarness.api.capability.CapKind;
 import ch.predmet.jarness.api.capability.Capability;
 import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.config.JarnessLayout;
-import ch.predmet.jarness.api.ipc.Blackboard;
 import ch.predmet.jarness.api.ipc.Cell;
 import ch.predmet.jarness.api.ipc.Channel;
+import ch.predmet.jarness.api.ipc.Shm;
+import ch.predmet.jarness.api.namespace.Namespace;
+import ch.predmet.jarness.api.namespace.NamespaceMetadata;
+import ch.predmet.jarness.api.namespace.NamespaceSpec;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,7 +35,11 @@ class IpcTest {
     Path base;
 
     private JarnessRuntime runtime() throws Exception {
-        JarnessLayout layout = JarnessLayout.of(base);
+        return runtime(base);
+    }
+
+    private JarnessRuntime runtime(Path root) throws Exception {
+        JarnessLayout layout = JarnessLayout.of(root);
         Files.createDirectories(layout.configDir());
         Files.writeString(layout.configFile(), """
                 [defaults]
@@ -41,7 +48,7 @@ class IpcTest {
                 [execution]
                 mode = "local"
                 """);
-        JarnessRuntime runtime = Jarness.Builder.at(base).build();
+        JarnessRuntime runtime = Jarness.Builder.at(root).build();
         runtime.start();
         return runtime;
     }
@@ -51,29 +58,29 @@ class IpcTest {
     }
 
     @Test
-    void blackboardSupportsCasWatchAndLocks() throws Exception {
+    void shmSupportsCasWatchAndLocks() throws Exception {
         try (JarnessRuntime runtime = runtime()) {
             Agent owner = agent(runtime, "owner", CapabilitySet.of(Capability.of(CapKind.IPC)));
-            Blackboard board = runtime.ipc().createBoard(owner, "task-board");
+            Shm shm = runtime.ipc().createShm(owner, "task-board");
             AtomicReference<Cell> seen = new AtomicReference<>();
-            AutoCloseable watch = board.watch("task-1", seen::set);
+            AutoCloseable watch = shm.watch("task-1", seen::set);
 
-            Cell cell = board.write("task-1", "open");
+            Cell cell = shm.write("task-1", "open");
             assertEquals(1, cell.version());
             assertEquals("open", cell.value());
             assertEquals(1, seen.get().version());
 
-            assertTrue(board.compareAndSet("task-1", 1, "claimed").isPresent());
-            assertTrue(board.compareAndSet("task-1", 1, "stale").isEmpty());
-            assertEquals("claimed", board.read("task-1").orElseThrow().value());
-            assertEquals(2, board.read("task-1").orElseThrow().version());
+            assertTrue(shm.compareAndSet("task-1", 1, "claimed").isPresent());
+            assertTrue(shm.compareAndSet("task-1", 1, "stale").isEmpty());
+            assertEquals("claimed", shm.read("task-1").orElseThrow().value());
+            assertEquals(2, shm.read("task-1").orElseThrow().version());
 
-            AutoCloseable lock = board.lock("task-1");
+            AutoCloseable lock = shm.lock("task-1");
             lock.close();
-            assertTrue(board.delete("task-1"));
-            assertTrue(board.read("task-1").isEmpty());
+            assertTrue(shm.delete("task-1"));
+            assertTrue(shm.read("task-1").isEmpty());
             assertNull(seen.get().value(), "delete watcher notification carries a null value");
-            assertTrue(board.cells().isEmpty());
+            assertTrue(shm.cells().isEmpty());
             watch.close();
         }
     }
@@ -101,18 +108,56 @@ class IpcTest {
     }
 
     @Test
-    void handlesRequireIpcCapabilityAndDieWithTheOwner() throws Exception {
+    void shmRequiresIpcAndOutlivesItsCreator() throws Exception {
         try (JarnessRuntime runtime = runtime()) {
             Agent noIpc = agent(runtime, "no-ipc", CapabilitySet.of(Capability.of(CapKind.FS_READ)));
-            assertThrows(SecurityException.class, () -> runtime.ipc().createBoard(noIpc, "nope"));
+            assertThrows(SecurityException.class, () -> runtime.ipc().createShm(noIpc, "nope"));
 
             Agent owner = agent(runtime, "owner", CapabilitySet.of(Capability.of(CapKind.IPC)));
-            Blackboard board = runtime.ipc().createBoard(owner, "ephemeral");
-            assertEquals(List.of("ephemeral"), runtime.ipc().boards());
+            Shm shm = runtime.ipc().createShm(owner, "ephemeral");
+            shm.write("handoff", "survives");
+            assertEquals(List.of("ephemeral"), runtime.ipc().shms("default"));
 
             owner.stop("test over");
-            assertTrue(board.closed());
-            assertTrue(runtime.ipc().boards().isEmpty());
+            Shm reopened = runtime.ipc().attachShm(
+                    agent(runtime, "other", CapabilitySet.of(Capability.of(CapKind.IPC))), "ephemeral");
+            assertEquals("survives", reopened.read("handoff").orElseThrow().value());
+        }
+    }
+
+    @Test
+    void shmCellsPersistAcrossRuntimeRestart() throws Exception {
+        try (JarnessRuntime runtime = runtime()) {
+            Agent owner = agent(runtime, "writer", CapabilitySet.of(Capability.of(CapKind.IPC)));
+            runtime.ipc().createShm(owner, "durable").write("status", "committed");
+        }
+        try (JarnessRuntime runtime = runtime()) {
+            Agent reader = agent(runtime, "reader", CapabilitySet.of(Capability.of(CapKind.IPC)));
+            Shm shm = runtime.ipc().attachShm(reader, "durable");
+            assertEquals("committed", shm.read("status").orElseThrow().value());
+            assertEquals(1, shm.read("status").orElseThrow().version());
+        }
+    }
+
+    @Test
+    void shmNamesAreScopedToTheNamespace() throws Exception {
+        try (JarnessRuntime runtime = runtime()) {
+            Agent owner = agent(runtime, "owner", CapabilitySet.of(Capability.of(CapKind.IPC)));
+            Shm first = runtime.ipc().createShm(owner, "same-name");
+            first.write("value", "default");
+
+            Namespace other = runtime.namespaces().create(new NamespaceSpec(
+                    "other", NamespaceMetadata.of("other", base.resolve("other-cwd"),
+                    runtime.namespaces().defaultNs().metadata().defaults()),
+                    runtime.sessions(), "void", ""));
+            Agent otherAgent = runtime.spawn(AgentRequest.builder("void").namespace("other")
+                    .capabilities(CapabilitySet.of(Capability.of(CapKind.IPC))).build());
+            Shm second = runtime.ipc().attachShm(otherAgent, "same-name");
+            assertEquals(other.id(), second.namespaceId());
+            assertTrue(second.read("value").isEmpty());
+            second.write("value", "other");
+            assertEquals("default", first.read("value").orElseThrow().value());
+            assertEquals(List.of("same-name"), runtime.ipc().shms("other"));
         }
     }
 
@@ -121,8 +166,8 @@ class IpcTest {
         try (JarnessRuntime runtime = runtime()) {
             Agent superAgent = runtime.supervisor().ensureSuperAgent();
             assertTrue(superAgent.capabilities().containsKind(CapKind.PLATFORM));
-            var namespace = runtime.namespaces().create(new ch.predmet.jarness.api.namespace.NamespaceSpec(
-                    "review", ch.predmet.jarness.api.namespace.NamespaceMetadata.of("review",
+            var namespace = runtime.namespaces().create(new NamespaceSpec(
+                    "review", NamespaceMetadata.of("review", base.resolve("review-cwd"),
                     runtime.namespaces().defaultNs().metadata().defaults()),
                     runtime.sessions(), "void", ""));
             assertEquals("review", namespace.id());

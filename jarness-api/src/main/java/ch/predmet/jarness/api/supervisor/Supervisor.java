@@ -7,7 +7,7 @@ import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.kernel.AgentManifest;
 import ch.predmet.jarness.api.kernel.AgentTree;
 import ch.predmet.jarness.api.kernel.Budget;
-import ch.predmet.jarness.api.ipc.Blackboard;
+import ch.predmet.jarness.api.ipc.Shm;
 import ch.predmet.jarness.api.ipc.Channel;
 import ch.predmet.jarness.api.kernel.ImageRef;
 import ch.predmet.jarness.api.mod.LoadReport;
@@ -245,13 +245,13 @@ public interface Supervisor extends AutoCloseable {
     }
 
     /**
-     * Create a blackboard owned by an agent.
+     * Create a shm owned by an agent.
      *
      * @param owner owner
-     * @param id    board id
-     * @return the board
+     * @param id    shm id
+     * @return the shm
      */
-    default Blackboard createBoard(Agent owner, String id) {
+    default Shm createShm(Agent owner, String id) {
         throw new UnsupportedOperationException("this supervisor does not expose IPC handles");
     }
 

@@ -78,14 +78,13 @@ class LiveEndpointIntegrationTest {
     void standardAgentUsesTools() throws Exception {
         assumeTrue(Boolean.getBoolean("jarness.it"), "integration tests disabled");
         try (JarnessRuntime rt = runtime(TestEndpoints.gb10())) {
-            Path workspace = base.resolve("ws");
-            Agent agent = rt.spawn(AgentRequest.builder("standard").name("it-std").workspace(workspace).build());
+            Agent agent = rt.spawn(AgentRequest.builder("standard").name("it-std").build());
             TurnResult result = agent.submit(
                     "Create a file named hello.txt containing the text \"jarness works\", "
                             + "then read it back and tell me its exact content.").get();
             assertEquals(ch.predmet.jarness.api.session.TurnState.COMPLETED, result.state(),
                     result.error());
-            assertTrue(Files.readString(workspace.resolve("hello.txt")).contains("jarness works"));
+            assertTrue(Files.readString(agent.workspace().resolve("hello.txt")).contains("jarness works"));
             assertTrue(result.output().contains("jarness works"), result.output());
             assertTrue(result.steps() >= 2, "expected at least one tool step, got " + result.steps());
             // the session persisted the tool calls
@@ -113,10 +112,11 @@ class LiveEndpointIntegrationTest {
     @Test
     void resolvesModelRefs() {
         assumeTrue(Boolean.getBoolean("jarness.it"), "integration tests disabled");
-        try (JarnessRuntime rt = runtime(TestEndpoints.gb10())) {
+        ProviderProfile profile = TestEndpoints.gb10();
+        try (JarnessRuntime rt = runtime(profile)) {
             ModelRef ref = rt.providers().resolveSelector(null);
-            assertEquals("GB10", ref.providerId());
-            assertEquals("DeepSeek-V4-Flash", ref.modelId());
+            assertEquals(profile.id(), ref.providerId());
+            assertEquals(profile.firstModelId(), ref.modelId());
         }
     }
 }

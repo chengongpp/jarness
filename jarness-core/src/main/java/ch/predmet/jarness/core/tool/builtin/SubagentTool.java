@@ -12,19 +12,16 @@ import ch.predmet.jarness.api.tool.ToolOutcome;
 import ch.predmet.jarness.api.tool.ToolParameter;
 import ch.predmet.jarness.api.tool.ToolSpec;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
  * {@code subagent} — delegate a self-contained task to a subagent and wait for its result. The
- * child runs in a fresh {@code subagents/<id>} subdirectory of the parent workspace and is stopped
- * after its turn. Nesting is capped through the {@code subagent.depth} agent-context key.
+ * child shares the namespace cwd with its parent and is stopped after its turn. Nesting is capped
+ * through the {@code subagent.depth} agent-context key.
  */
 public final class SubagentTool implements Tool {
 
@@ -63,10 +60,8 @@ public final class SubagentTool implements Tool {
             String description = invocation.requireString("description");
             String prompt = invocation.requireString("prompt");
             String templateId = pickTemplate(invocation, ctx);
-            Path workspace = freshChildWorkspace(ctx);
             child = ctx.runtime().spawnFrom(ctx.agent(), AgentRequest.builder(templateId)
                     .name("sub:" + description)
-                    .workspace(workspace)
                     .build());
             child.ctx().put(NestingGuard.KEY, NestingGuard.depth(ctx) + 1);
             CompletableFuture<TurnResult> turn = child.submit(prompt);
@@ -105,12 +100,5 @@ public final class SubagentTool implements Tool {
             return requested;
         }
         return ctx.runtime().templates().contains("standard") ? "standard" : "minimal";
-    }
-
-    static Path freshChildWorkspace(ToolContext ctx) throws java.io.IOException {
-        Path dir = ctx.workspace().resolve("subagents")
-                .resolve("sub-" + UUID.randomUUID().toString().substring(0, 8));
-        Files.createDirectories(dir);
-        return dir;
     }
 }

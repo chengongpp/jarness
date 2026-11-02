@@ -73,6 +73,7 @@ public interface Agent extends AutoCloseable {
     AgentTemplate template();
 
     /** @return the agent's working directory; never the runtime base directory. */
+    /** @return the namespace cwd shared by every agent in this namespace. */
     Path workspace();
 
     /** @return current lifecycle state. */

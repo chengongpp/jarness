@@ -11,8 +11,8 @@ import java.util.Map;
  * A durable conversation owned by one agent.
  *
  * <p>A session outlives the agent object that produced it: resuming means loading the session's
- * messages and continuing with a fresh agent instance. Its {@link #workspace()} is the *agent's*
- * working directory and is unrelated to the Jarness base directory.</p>
+ * messages and continuing with a fresh agent instance. Its {@link #workspace()} is the namespace
+ * cwd shared by the agent's namespace and is unrelated to the Jarness base directory.</p>
  */
 public interface Session {
 
@@ -25,8 +25,18 @@ public interface Session {
     /** @return a short human title, usually the first user input. */
     String title();
 
-    /** @return the working directory tool calls resolve against. */
+    /** @return the namespace cwd tool calls resolve against. */
     Path workspace();
+
+    /**
+     * Rebind this session to a new working directory.
+     *
+     * <p>Used when an image is resumed into a namespace whose cwd changed; the agent always follows
+     * the namespace metadata, not the workspace recorded by an older image.</p>
+     *
+     * @param workspace the new namespace cwd
+     */
+    void rebindWorkspace(Path workspace);
 
     /** @return the template the agent was created from. */
     String templateId();

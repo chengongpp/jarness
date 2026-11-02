@@ -23,7 +23,7 @@ public enum CapKind {
     SPAWN("spawn"),
     /** Load mods, register templates, and otherwise extend the running runtime. */
     EXTEND("extend"),
-    /** Use collaboration primitives: blackboards and channels. */
+    /** Use collaboration primitives: shared memory (shm) and channels. */
     IPC("ipc"),
     /** Cross namespace boundaries. */
     NAMESPACE("namespace"),

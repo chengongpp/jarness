@@ -13,7 +13,7 @@ import java.util.Map;
  * @param name        tool name, unique in the registry
  * @param description one-to-three sentence model-facing description
  * @param parameters  ordered parameter declarations
- * @param readOnly    whether the tool can change the workspace; read-only tools may be called in
+ * @param readOnly    whether the tool can change the namespace cwd; read-only tools may be called in
  *                    read-only sandbox modes and in parallel
  */
 public record ToolSpec(String name, String description, Map<String, ToolParameter> parameters, boolean readOnly) {

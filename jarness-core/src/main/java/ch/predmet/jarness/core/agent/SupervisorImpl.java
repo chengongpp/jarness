@@ -817,8 +817,8 @@ public final class SupervisorImpl implements Supervisor {
     }
 
     @Override
-    public ch.predmet.jarness.api.ipc.Blackboard createBoard(Agent owner, String id) {
-        return runtime.get().ipc().createBoard(owner, id);
+    public ch.predmet.jarness.api.ipc.Shm createShm(Agent owner, String id) {
+        return runtime.get().ipc().createShm(owner, id);
     }
 
     @Override

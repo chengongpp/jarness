@@ -26,6 +26,11 @@ public interface Namespace {
     /** @return the namespace metadata. */
     NamespaceMetadata metadata();
 
+    /** @return the working directory shared by every agent in this namespace. */
+    default java.nio.file.Path cwd() {
+        return metadata().cwd();
+    }
+
     /** @return the store that owns this namespace's images. */
     SessionStore store();
 

@@ -29,7 +29,7 @@ public class SessionImpl implements Session {
     private final SessionStore store;
     private final String id;
     private final String agentId;
-    private final Path workspace;
+    private Path workspace;
     private final String templateId;
     private final Instant createdAt;
     private final Map<String, Object> metadata;
@@ -93,6 +93,16 @@ public class SessionImpl implements Session {
     @Override
     public Path workspace() {
         return workspace;
+    }
+
+    @Override
+    public void rebindWorkspace(Path newWorkspace) {
+        if (newWorkspace == null) {
+            return;
+        }
+        this.workspace = newWorkspace.toAbsolutePath().normalize();
+        touch();
+        store.update(this);
     }
 
     @Override
