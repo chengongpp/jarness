@@ -43,6 +43,12 @@ class NetFetchExecutorTest {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
+        server.createContext("/redirect", exchange -> {
+            String target = "http://localhost:" + server.getAddress().getPort() + "/page";
+            exchange.getResponseHeaders().add("Location", target);
+            exchange.sendResponseHeaders(302, -1);
+            exchange.close();
+        });
         server.start();
         try (LocalExecutionProvider provider = LocalExecutionProvider.start(repo)) {
             String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/page";
@@ -61,6 +67,13 @@ class NetFetchExecutorTest {
             assertTrue(result.text().contains("Hello"), result.text());
             assertTrue(result.text().contains("world"), result.text());
             assertFalse(result.text().contains("<h1>"), result.text());
+
+            ExecResult redirect = provider.invoke(new ExecRequest("n3", "net.fetch",
+                    Map.of("url", "http://127.0.0.1:" + server.getAddress().getPort() + "/redirect"),
+                    null, ToolMode.SYNC, "n3", workspace.toString(), "workspace-write",
+                    CapabilitySet.of(Capability.of(CapKind.NET, "127.0.0.1")), "default"));
+            assertFalse(redirect.ok(), "a redirect must re-check the destination host");
+            assertTrue(redirect.error().contains("localhost"), redirect.error());
         } finally {
             server.stop(0);
             if (previous == null) {

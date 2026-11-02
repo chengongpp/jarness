@@ -309,7 +309,11 @@ public final class LocalExecutionProvider implements ExecutionProvider {
     private void sendCall(ExecRequest request, String callId, long deadlineMs) throws IOException {
         String argsJson = MAPPER.writeValueAsString(request.args());
         String capsJson = capsJson(request.capabilities());
-        String canonical = callId + "|" + request.tool() + "|" + argsJson + "|" + deadlineMs + "|" + capsJson;
+        String idempotency = request.idempotencyKey() == null ? callId : request.idempotencyKey();
+        String workspace = request.workspace() == null ? "" : request.workspace();
+        // Bind every security-relevant field to the call. JSON avoids delimiter ambiguity in args.
+        String canonical = MAPPER.writeValueAsString(new Object[]{callId, request.tool(), argsJson,
+                deadlineMs, capsJson, workspace, request.sandbox(), request.namespace(), idempotency});
         ObjectNode frame = MAPPER.createObjectNode();
         frame.put("type", "call");
         frame.put("callId", callId);
@@ -317,8 +321,8 @@ public final class LocalExecutionProvider implements ExecutionProvider {
         frame.put("argsJson", argsJson);
         frame.put("deadlineMs", deadlineMs);
         frame.put("mode", request.mode().name());
-        frame.put("idempotencyKey", request.idempotencyKey() == null ? callId : request.idempotencyKey());
-        frame.put("workspace", request.workspace() == null ? "" : request.workspace());
+        frame.put("idempotencyKey", idempotency);
+        frame.put("workspace", workspace);
         frame.put("sandbox", request.sandbox());
         frame.put("namespace", request.namespace());
         frame.put("capsJson", capsJson);

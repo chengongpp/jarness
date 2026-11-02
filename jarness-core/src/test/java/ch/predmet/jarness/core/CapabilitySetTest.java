@@ -22,6 +22,8 @@ class CapabilitySetTest {
         assertTrue(Capability.coversResource("*", "/anything"));
         assertTrue(Capability.coversResource("/data/*", "/data/team/file.txt"));
         assertFalse(Capability.coversResource("/data/*", "/etc/passwd"));
+        assertFalse(Capability.coversResource("/data/*", "/data-secret"),
+                "a path wildcard must end at a path-component boundary");
         assertFalse(Capability.coversResource("/data/team", "/data/team/file.txt"),
                 "a plain path is exact, not a prefix");
         assertTrue(Capability.coversResource("*.example.com", "api.example.com"));

@@ -6,7 +6,6 @@
 //! executor never has to trust ambient JVM state.
 
 use std::collections::HashMap;
-use std::fs;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
@@ -17,6 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use glob::Pattern;
 use hmac::{Hmac, Mac};
 use rustls::pki_types::ServerName;
@@ -27,7 +28,16 @@ use sha2::Sha256;
 type HmacSha256 = Hmac<Sha256>;
 
 const PROTOCOL: u64 = 1;
-const TOOLS: &[&str] = &["fs.read", "fs.write", "fs.edit", "fs.delete", "fs.glob", "fs.grep", "exec.run", "net.fetch"];
+const TOOLS: &[&str] = &[
+    "fs.read",
+    "fs.write",
+    "fs.edit",
+    "fs.delete",
+    "fs.glob",
+    "fs.grep",
+    "exec.run",
+    "net.fetch",
+];
 const MAX_READ_LIMIT: usize = 2000;
 const MAX_GREP_MATCHES: usize = 250;
 const MAX_GLOB_RESULTS: usize = 100;
@@ -170,7 +180,10 @@ fn main() {
         "tools": TOOLS,
     });
     send(&shared, &hello).expect("queue hello");
-    eprintln!("jarness-executor connected to {addr}{}", if tls { " (TLS)" } else { "" });
+    eprintln!(
+        "jarness-executor connected to {addr}{}",
+        if tls { " (TLS)" } else { "" }
+    );
 
     let mut buffer: Vec<u8> = Vec::new();
     let mut scratch = [0u8; 8192];
@@ -210,8 +223,9 @@ fn main() {
                     }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => {
                 eprintln!("read error: {e}");
                 break;
@@ -295,7 +309,10 @@ fn connect_with_retry(addr: &str) -> TcpStream {
             }
         }
     }
-    eprintln!("could not connect to {addr}: {}", last.map(|e| e.to_string()).unwrap_or_default());
+    eprintln!(
+        "could not connect to {addr}: {}",
+        last.map(|e| e.to_string()).unwrap_or_default()
+    );
     std::process::exit(1);
 }
 
@@ -307,32 +324,108 @@ fn send(shared: &Shared, frame: &Value) -> std::io::Result<()> {
 }
 
 fn handle_call(shared: &Shared, frame: Value) {
-    let call_id = frame.get("callId").and_then(Value::as_str).unwrap_or("").to_string();
-    let tool = frame.get("tool").and_then(Value::as_str).unwrap_or("").to_string();
-    let args_json = frame.get("argsJson").and_then(Value::as_str).unwrap_or("{}").to_string();
+    let call_id = frame
+        .get("callId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let tool = frame
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let args_json = frame
+        .get("argsJson")
+        .and_then(Value::as_str)
+        .unwrap_or("{}")
+        .to_string();
     let deadline_ms = frame.get("deadlineMs").and_then(Value::as_u64).unwrap_or(0);
-    let workspace = frame.get("workspace").and_then(Value::as_str).unwrap_or("").to_string();
-    let sandbox = frame.get("sandbox").and_then(Value::as_str).unwrap_or("workspace-write").to_string();
-    let caps_json = frame.get("capsJson").and_then(Value::as_str).unwrap_or("[]").to_string();
-    let cap_token = frame.get("capToken").and_then(Value::as_str).unwrap_or("").to_string();
-    let idempotency = frame.get("idempotencyKey").and_then(Value::as_str).unwrap_or(&call_id).to_string();
+    let workspace = frame
+        .get("workspace")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let sandbox = frame
+        .get("sandbox")
+        .and_then(Value::as_str)
+        .unwrap_or("workspace-write")
+        .to_string();
+    let namespace = frame
+        .get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_string();
+    let caps_json = frame
+        .get("capsJson")
+        .and_then(Value::as_str)
+        .unwrap_or("[]")
+        .to_string();
+    let cap_token = frame
+        .get("capToken")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let idempotency = frame
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .unwrap_or(&call_id)
+        .to_string();
     let started = Instant::now();
     let cancel = Arc::new(AtomicBool::new(false));
-    shared.cancels.lock().unwrap().insert(call_id.clone(), Arc::clone(&cancel));
+    shared
+        .cancels
+        .lock()
+        .unwrap()
+        .insert(call_id.clone(), Arc::clone(&cancel));
     if cancel.load(Ordering::SeqCst) {
-        let _ = emit_result(shared, &call_id, false, "", "cancelled", -1, started.elapsed().as_millis() as u64);
+        let _ = emit_result(
+            shared,
+            &call_id,
+            false,
+            "",
+            "cancelled",
+            -1,
+            started.elapsed().as_millis() as u64,
+        );
         shared.cancels.lock().unwrap().remove(&call_id);
         return;
     }
 
-    let canonical = format!("{}|{}|{}|{}|{}", call_id, tool, args_json, deadline_ms, caps_json);
+    let canonical = serde_json::to_string(&json!([
+        &call_id,
+        &tool,
+        &args_json,
+        deadline_ms,
+        &caps_json,
+        &workspace,
+        &sandbox,
+        &namespace,
+        &idempotency,
+    ]))
+    .unwrap_or_default();
     if !verify_hmac(&shared.token, &canonical, &cap_token) {
-        let _ = emit_result(shared, &call_id, false, "", "auth_failed", -1, started.elapsed().as_millis() as u64);
+        let _ = emit_result(
+            shared,
+            &call_id,
+            false,
+            "",
+            "auth_failed",
+            -1,
+            started.elapsed().as_millis() as u64,
+        );
         shared.cancels.lock().unwrap().remove(&call_id);
         return;
     }
     if deadline_ms > 0 && now_ms() > deadline_ms {
-        let _ = emit_result(shared, &call_id, false, "", "deadline exceeded before start", -1, 0);
+        let _ = emit_result(
+            shared,
+            &call_id,
+            false,
+            "",
+            "deadline exceeded before start",
+            -1,
+            0,
+        );
         shared.cancels.lock().unwrap().remove(&call_id);
         return;
     }
@@ -356,7 +449,11 @@ fn handle_call(shared: &Shared, frame: Value) {
         .filter_map(|value| {
             Some(Cap {
                 kind: value.get("kind")?.as_str()?.to_string(),
-                resource: value.get("resource").and_then(Value::as_str).unwrap_or("*").to_string(),
+                resource: value
+                    .get("resource")
+                    .and_then(Value::as_str)
+                    .unwrap_or("*")
+                    .to_string(),
             })
         })
         .collect();
@@ -372,7 +469,11 @@ fn handle_call(shared: &Shared, frame: Value) {
         Ok(result) => {
             let frame = result_frame(&call_id, true, &result.text, "", result.exit_code, duration);
             if let Some(entry) = frame.as_object() {
-                shared.cache.lock().unwrap().insert(idempotency, (Instant::now(), Value::Object(entry.clone())));
+                shared
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .insert(idempotency, (Instant::now(), Value::Object(entry.clone())));
             }
             let _ = send(shared, &frame);
         }
@@ -387,36 +488,78 @@ struct ToolResult {
     exit_code: i64,
 }
 
-fn dispatch(tool: &str, args: &Value, workspace: &str, sandbox: &str, caps: &[Cap], cancel: &AtomicBool) -> Result<ToolResult, String> {
+fn dispatch(
+    tool: &str,
+    args: &Value,
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+    cancel: &AtomicBool,
+) -> Result<ToolResult, String> {
     match tool {
-        "fs.read" => read_file(args, workspace, sandbox, caps).map(|text| ToolResult { text, exit_code: -1 }),
-        "fs.write" => write_file(args, workspace, sandbox, caps).map(|text| ToolResult { text, exit_code: -1 }),
-        "fs.edit" => edit_file(args, workspace, sandbox, caps).map(|text| ToolResult { text, exit_code: -1 }),
-        "fs.delete" => delete_path(args, workspace, sandbox, caps).map(|text| ToolResult { text, exit_code: -1 }),
-        "fs.glob" => glob_files(args, workspace, caps).map(|text| ToolResult { text, exit_code: -1 }),
-        "fs.grep" => grep_files(args, workspace, caps).map(|text| ToolResult { text, exit_code: -1 }),
+        "fs.read" => read_file(args, workspace, sandbox, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
+        "fs.write" => write_file(args, workspace, sandbox, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
+        "fs.edit" => edit_file(args, workspace, sandbox, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
+        "fs.delete" => delete_path(args, workspace, sandbox, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
+        "fs.glob" => glob_files(args, workspace, sandbox, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
+        "fs.grep" => grep_files(args, workspace, sandbox, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
         "exec.run" => run_command(args, workspace, sandbox, caps, cancel),
-        "net.fetch" => fetch_url(args, caps).map(|text| ToolResult { text, exit_code: -1 }),
+        "net.fetch" => fetch_url(args, caps).map(|text| ToolResult {
+            text,
+            exit_code: -1,
+        }),
         other => Err(format!("unknown executor tool: {other}")),
     }
 }
 
 // ---------------------------------------------------------------- filesystem
 
-fn read_file(args: &Value, workspace: &str, _sandbox: &str, caps: &[Cap]) -> Result<String, String> {
+fn read_file(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap]) -> Result<String, String> {
     let path = resolve_path(workspace, required_path(args)?);
-    require_fs(caps, "FS_READ", &path)?;
-    if !path.exists() {
-        return Err(format!("file does not exist: {}", path.display()));
+    let target = fs_target(workspace, sandbox, caps, "FS_READ", &path)?;
+    let metadata = target
+        .dir
+        .metadata(&target.relative)
+        .map_err(|e| format!("read failed for {}: {e}", path.display()))?;
+    if metadata.is_dir() {
+        return Err(format!(
+            "path is a directory, not a file: {}",
+            path.display()
+        ));
     }
-    if path.is_dir() {
-        return Err(format!("path is a directory, not a file: {}", path.display()));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("read failed: {e}"))?;
+    let content = target
+        .dir
+        .read_to_string(&target.relative)
+        .map_err(|e| format!("read failed: {e}"))?;
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
-    let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(MAX_READ_LIMIT as u64) as usize;
+    let offset = args
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(MAX_READ_LIMIT as u64) as usize;
     let limit = limit.min(MAX_READ_LIMIT).max(1);
     let from = (offset - 1).min(total);
     let to = (from + limit).min(total);
@@ -439,29 +582,45 @@ fn read_file(args: &Value, workspace: &str, _sandbox: &str, caps: &[Cap]) -> Res
     Ok(out)
 }
 
-fn write_file(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap]) -> Result<String, String> {
+fn write_file(
+    args: &Value,
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+) -> Result<String, String> {
     let path = resolve_path(workspace, required_path(args)?);
-    require_fs(caps, "FS_WRITE", &path)?;
-    require_sandbox_write(sandbox, workspace, &path)?;
+    let target = fs_target(workspace, sandbox, caps, "FS_WRITE", &path)?;
     let content = required_str(args, "content")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("write failed: {e}"))?;
+    if let Some(parent) = target.relative.parent() {
+        target
+            .dir
+            .create_dir_all(parent)
+            .map_err(|e| format!("write failed: {e}"))?;
     }
-    fs::write(&path, &content).map_err(|e| format!("write failed: {e}"))?;
-    Ok(format!("wrote {} ({} chars)", path.display(), content.chars().count()))
+    target
+        .dir
+        .write(&target.relative, &content)
+        .map_err(|e| format!("write failed: {e}"))?;
+    Ok(format!(
+        "wrote {} ({} chars)",
+        path.display(),
+        content.chars().count()
+    ))
 }
 
 fn edit_file(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap]) -> Result<String, String> {
     let path = resolve_path(workspace, required_path(args)?);
-    require_fs(caps, "FS_WRITE", &path)?;
-    require_sandbox_write(sandbox, workspace, &path)?;
+    let target = fs_target(workspace, sandbox, caps, "FS_WRITE", &path)?;
     let old = required_str(args, "old_string")?;
     let new = args.get("new_string").and_then(Value::as_str).unwrap_or("");
-    let all = args.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
-    if !path.exists() {
-        return Err(format!("file does not exist: {}", path.display()));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("edit failed: {e}"))?;
+    let all = args
+        .get("replace_all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let content = target
+        .dir
+        .read_to_string(&target.relative)
+        .map_err(|e| format!("edit failed: {e}"))?;
     let count = content.matches(&old).count();
     if count == 0 {
         return Err(format!("old_string not found in {}", path.display()));
@@ -477,50 +636,83 @@ fn edit_file(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap]) -> Resu
     } else {
         content.replacen(&old, new, 1)
     };
-    fs::write(&path, replaced).map_err(|e| format!("edit failed: {e}"))?;
+    target
+        .dir
+        .write(&target.relative, replaced)
+        .map_err(|e| format!("edit failed: {e}"))?;
     Ok(format!(
         "edited {} ({} replacement{})",
         path.display(),
         if all { count } else { 1 },
-        if (if all { count } else { 1 }) == 1 { "" } else { "s" }
+        if (if all { count } else { 1 }) == 1 {
+            ""
+        } else {
+            "s"
+        }
     ))
 }
 
-fn delete_path(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap]) -> Result<String, String> {
+fn delete_path(
+    args: &Value,
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+) -> Result<String, String> {
     let path = resolve_path(workspace, required_path(args)?);
-    require_fs(caps, "FS_WRITE", &path)?;
-    require_sandbox_write(sandbox, workspace, &path)?;
-    if !path.exists() {
-        return Err(format!("no such file: {}", path.display()));
-    }
-    if path.is_dir() {
-        fs::remove_dir(&path).map_err(|e| format!("delete failed: {e} (directory must be empty)"))?;
+    let target = fs_target(workspace, sandbox, caps, "FS_WRITE", &path)?;
+    let metadata = target
+        .dir
+        .symlink_metadata(&target.relative)
+        .map_err(|e| format!("delete failed for {}: {e}", path.display()))?;
+    if metadata.is_dir() {
+        target
+            .dir
+            .remove_dir(&target.relative)
+            .map_err(|e| format!("delete failed: {e} (directory must be empty)"))?;
     } else {
-        fs::remove_file(&path).map_err(|e| format!("delete failed: {e}"))?;
+        target
+            .dir
+            .remove_file(&target.relative)
+            .map_err(|e| format!("delete failed: {e}"))?;
     }
     Ok(format!("deleted {}", path.display()))
 }
 
-fn glob_files(args: &Value, workspace: &str, caps: &[Cap]) -> Result<String, String> {
+fn glob_files(
+    args: &Value,
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+) -> Result<String, String> {
     let pattern_text = required_str(args, "pattern")?;
     let pattern = Pattern::new(&pattern_text).map_err(|e| format!("invalid glob pattern: {e}"))?;
     let root = match args.get("path").and_then(Value::as_str) {
         Some(value) if !value.is_empty() => resolve_path(workspace, value.to_string()),
         _ => PathBuf::from(workspace),
     };
-    require_fs(caps, "FS_READ", &root)?;
-    if !root.is_dir() {
-        return Err(format!("search root is not a directory: {}", root.display()));
-    }
+    let target = fs_target(workspace, sandbox, caps, "FS_READ", &root)?;
+    let search_dir = target.dir.open_dir(&target.relative).map_err(|e| {
+        format!(
+            "glob root is not a searchable directory {}: {e}",
+            root.display()
+        )
+    })?;
     let basename_only = !pattern_text.contains('/');
-    let mut matches: Vec<(PathBuf, SystemTime)> = Vec::new();
-    walk(&root, &mut |file| {
-        let relative = file.strip_prefix(&root).unwrap_or(file);
+    let mut matches: Vec<(PathBuf, cap_std::time::SystemTime)> = Vec::new();
+    walk(&search_dir, &mut |relative, dir| {
+        let file = root.join(relative);
         if pattern.matches_path(relative)
-            || (basename_only && file.file_name().map(|name| pattern.matches(&name.to_string_lossy())).unwrap_or(false))
+            || (basename_only
+                && file
+                    .file_name()
+                    .map(|name| pattern.matches(&name.to_string_lossy()))
+                    .unwrap_or(false))
         {
-            let modified = fs::metadata(file).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
-            matches.push((file.to_path_buf(), modified));
+            let modified = dir
+                .metadata(relative)
+                .and_then(|m| m.modified())
+                .unwrap_or_else(|_| cap_std::time::SystemTime::from_std(UNIX_EPOCH));
+            matches.push((file, modified));
         }
     })
     .map_err(|e| format!("glob failed: {e}"))?;
@@ -529,7 +721,13 @@ fn glob_files(args: &Value, workspace: &str, caps: &[Cap]) -> Result<String, Str
     let shown = total.min(MAX_GLOB_RESULTS);
     let mut out = String::new();
     for (file, _) in matches.iter().take(shown) {
-        out.push_str(&file.strip_prefix(&root).unwrap_or(file).display().to_string());
+        out.push_str(
+            &file
+                .strip_prefix(&root)
+                .unwrap_or(file)
+                .display()
+                .to_string(),
+        );
         out.push('\n');
     }
     if total > MAX_GLOB_RESULTS {
@@ -538,52 +736,87 @@ fn glob_files(args: &Value, workspace: &str, caps: &[Cap]) -> Result<String, Str
             MAX_GLOB_RESULTS, total
         ));
     } else {
-        out.push_str(&format!("({} {})", total, if total == 1 { "file" } else { "files" }));
+        out.push_str(&format!(
+            "({} {})",
+            total,
+            if total == 1 { "file" } else { "files" }
+        ));
     }
     Ok(out)
 }
 
-fn grep_files(args: &Value, workspace: &str, caps: &[Cap]) -> Result<String, String> {
+fn grep_files(
+    args: &Value,
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+) -> Result<String, String> {
     let pattern_text = required_str(args, "pattern")?;
-    let pattern = regex::Regex::new(&pattern_text).map_err(|e| format!("invalid regular expression: {e}"))?;
+    let pattern =
+        regex::Regex::new(&pattern_text).map_err(|e| format!("invalid regular expression: {e}"))?;
     let root = match args.get("path").and_then(Value::as_str) {
         Some(value) if !value.is_empty() => resolve_path(workspace, value.to_string()),
         _ => PathBuf::from(workspace),
     };
-    require_fs(caps, "FS_READ", &root)?;
-    if !root.exists() {
-        return Err(format!("search path does not exist: {}", root.display()));
-    }
+    let target = fs_target(workspace, sandbox, caps, "FS_READ", &root)?;
+    let metadata = target
+        .dir
+        .metadata(&target.relative)
+        .map_err(|e| format!("grep path does not exist {}: {e}", root.display()))?;
     let include = match args.get("include").and_then(Value::as_str) {
-        Some(value) if !value.is_empty() => Some(Pattern::new(value).map_err(|e| format!("invalid include glob: {e}"))?),
+        Some(value) if !value.is_empty() => {
+            Some(Pattern::new(value).map_err(|e| format!("invalid include glob: {e}"))?)
+        }
         _ => None,
     };
-    let base = if root.is_file() { root.parent().map(Path::to_path_buf).unwrap_or_else(|| root.clone()) } else { root.clone() };
-    let mut files = Vec::new();
-    if root.is_file() {
-        files.push(root.clone());
+    let (content_dir, files) = if metadata.is_file() {
+        let parent = target.relative.parent().unwrap_or_else(|| Path::new("."));
+        let dir = target
+            .dir
+            .open_dir(parent)
+            .map_err(|e| format!("grep failed: {e}"))?;
+        (
+            dir,
+            vec![target
+                .relative
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_default()],
+        )
     } else {
-        walk(&root, &mut |file| files.push(file.to_path_buf())).map_err(|e| format!("grep failed: {e}"))?;
-    }
+        let dir = target
+            .dir
+            .open_dir(&target.relative)
+            .map_err(|e| format!("grep failed: {e}"))?;
+        let mut files = Vec::new();
+        walk(&dir, &mut |file, _| files.push(file.to_path_buf()))
+            .map_err(|e| format!("grep failed: {e}"))?;
+        (dir, files)
+    };
     let mut out = String::new();
     let mut matches = 0usize;
     let mut files_with_matches = 0usize;
     let mut truncated = false;
     for file in files {
         if let Some(include) = &include {
-            let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             if !include.matches(&name) {
                 continue;
             }
         }
-        if fs::metadata(&file).map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES || looks_binary(&file) {
+        if content_dir.metadata(&file).map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES
+            || looks_binary(&content_dir, &file)
+        {
             continue;
         }
-        let text = match fs::read_to_string(&file) {
+        let text = match content_dir.read_to_string(&file) {
             Ok(value) => value,
             Err(_) => continue,
         };
-        let relative = file.strip_prefix(&base).unwrap_or(&file).display().to_string();
+        let relative = file.display().to_string();
         let mut file_matched = false;
         for (index, line) in text.lines().enumerate() {
             if !pattern.is_match(line) {
@@ -615,15 +848,19 @@ fn grep_files(args: &Value, workspace: &str, caps: &[Cap]) -> Result<String, Str
             matches,
             if matches == 1 { "match" } else { "matches" },
             files_with_matches,
-            if files_with_matches == 1 { "file" } else { "files" }
+            if files_with_matches == 1 {
+                "file"
+            } else {
+                "files"
+            }
         ));
     }
     Ok(out)
 }
 
-fn looks_binary(path: &Path) -> bool {
+fn looks_binary(dir: &Dir, path: &Path) -> bool {
     let mut buffer = [0u8; SNIFF_BYTES];
-    match fs::File::open(path) {
+    match dir.open(path) {
         Ok(mut file) => match file.read(&mut buffer) {
             Ok(read) => buffer[..read].contains(&0),
             Err(_) => true,
@@ -632,20 +869,24 @@ fn looks_binary(path: &Path) -> bool {
     }
 }
 
-fn walk(root: &Path, visit: &mut dyn FnMut(&Path)) -> std::io::Result<()> {
-    if root.is_file() {
-        visit(root);
-        return Ok(());
-    }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
+fn walk(root: &Dir, visit: &mut dyn FnMut(&Path, &Dir)) -> std::io::Result<()> {
+    let mut stack = vec![PathBuf::new()];
+    while let Some(dir_path) = stack.pop() {
+        let read_path = if dir_path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir_path.as_path()
+        };
+        for entry in root.read_dir(read_path)? {
             let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
+            let path = dir_path.join(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
                 stack.push(path);
-            } else if path.is_file() {
-                visit(&path);
+            } else if file_type.is_file() {
+                // Symlinks are deliberately not followed during recursive search. Files opened
+                // later still use the same beneath-root directory handle.
+                visit(&path, root);
             }
         }
     }
@@ -654,7 +895,13 @@ fn walk(root: &Path, visit: &mut dyn FnMut(&Path)) -> std::io::Result<()> {
 
 // ---------------------------------------------------------------- process
 
-fn run_command(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap], cancel: &AtomicBool) -> Result<ToolResult, String> {
+fn run_command(
+    args: &Value,
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+    cancel: &AtomicBool,
+) -> Result<ToolResult, String> {
     require_kind(caps, "EXEC")?;
     if sandbox == "read-only" {
         return Err("sandbox mode is read-only: exec is not allowed".to_string());
@@ -664,13 +911,32 @@ fn run_command(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap], cance
         Some(value) if !value.is_empty() => resolve_path(workspace, value.to_string()),
         _ => PathBuf::from(workspace),
     };
-    if sandbox == "workspace-write" && !is_within(&cwd, Path::new(workspace)) {
-        return Err(format!("sandbox mode is workspace-write: {} is outside the workspace", cwd.display()));
-    }
+    let cwd = if sandbox == "workspace-write" {
+        let root = std::fs::canonicalize(workspace)
+            .map_err(|e| format!("cannot resolve workspace {workspace}: {e}"))?;
+        let actual = std::fs::canonicalize(&cwd)
+            .map_err(|e| format!("cannot resolve working directory {}: {e}", cwd.display()))?;
+        if !actual.starts_with(&root) {
+            return Err(format!(
+                "sandbox mode is workspace-write: {} is outside the workspace",
+                actual.display()
+            ));
+        }
+        actual
+    } else {
+        cwd
+    };
     if !cwd.is_dir() {
-        return Err(format!("working directory does not exist: {}", cwd.display()));
+        return Err(format!(
+            "working directory does not exist: {}",
+            cwd.display()
+        ));
     }
-    let timeout_ms = args.get("timeoutMs").and_then(Value::as_u64).unwrap_or(120_000).min(600_000);
+    let timeout_ms = args
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(120_000)
+        .min(600_000);
     let mut child = Command::new("bash")
         .arg("-c")
         .arg(command)
@@ -717,9 +983,15 @@ fn run_command(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap], cance
             Err(e) => return Err(format!("failed to wait for command: {e}")),
         }
     }
-    let status = child.wait().map_err(|e| format!("failed to wait for command: {e}"))?;
-    let stdout = out_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-    let stderr = err_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(|e| format!("failed to wait for command: {e}"))?;
+    let stdout = out_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = err_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
     let mut text = String::from_utf8_lossy(&stdout).to_string();
     let stderr_text = String::from_utf8_lossy(&stderr).to_string();
     if !stderr_text.trim().is_empty() {
@@ -744,35 +1016,76 @@ fn run_command(args: &Value, workspace: &str, sandbox: &str, caps: &[Cap], cance
 // ---------------------------------------------------------------- network
 
 fn fetch_url(args: &Value, caps: &[Cap]) -> Result<String, String> {
-    let url = required_str(args, "url")?;
-    let scheme = url.split("://").next().unwrap_or("").to_lowercase();
-    if scheme != "http" && scheme != "https" {
-        return Err(format!("only http(s) URLs can be fetched: {url}"));
-    }
-    let host = url
-        .split("://")
-        .nth(1)
-        .and_then(|rest| rest.split(['/', ':', '?', '#']).next())
-        .unwrap_or("");
-    require_net(caps, host)?;
-    let response = ureq::get(&url)
-        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) JarnessExecutor")
-        .timeout(Duration::from_secs(30))
-        .call();
-    let body = match response {
-        Ok(response) => response.into_string().map_err(|e| format!("web_fetch failed: {e}"))?,
-        Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code} fetching {url}")),
-        Err(ureq::Error::Transport(e)) => return Err(format!("web_fetch failed: {e}")),
-    };
+    let initial = checked_url(required_str(args, "url")?, caps)?;
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let body = fetch_body(&agent, initial, caps, 0)?;
     let mut text = html_to_text(&body);
     if text.trim().is_empty() {
         return Ok("The following is external, untrusted content:\n(empty page)".to_string());
     }
     if text.chars().count() > 20_000 {
-        text = text.chars().take(20_000).collect::<String>()
-            + "\n(truncated at 20000 chars)";
+        text = text.chars().take(20_000).collect::<String>() + "\n(truncated at 20000 chars)";
     }
-    Ok(format!("The following is external, untrusted content:\n{text}"))
+    Ok(format!(
+        "The following is external, untrusted content:\n{text}"
+    ))
+}
+
+fn checked_url(raw: String, caps: &[Cap]) -> Result<url::Url, String> {
+    let url = url::Url::parse(&raw).map_err(|e| format!("invalid URL {raw}: {e}"))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(format!("only http(s) URLs can be fetched: {url}"));
+    }
+    let host = url.host_str().unwrap_or("");
+    require_net(caps, host)?;
+    Ok(url)
+}
+
+fn fetch_body(
+    agent: &ureq::Agent,
+    url: url::Url,
+    caps: &[Cap],
+    redirects: u32,
+) -> Result<String, String> {
+    let response = agent
+        .get(url.as_str())
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) JarnessExecutor",
+        )
+        .timeout(Duration::from_secs(30))
+        .call();
+    let response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code} fetching {url}")),
+        Err(ureq::Error::Transport(e)) => return Err(format!("web_fetch failed: {e}")),
+    };
+    if matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
+        if redirects >= 5 {
+            return Err(format!("too many redirects fetching {url}"));
+        }
+        let location = response
+            .header("Location")
+            .ok_or_else(|| format!("redirect from {url} has no Location header"))?;
+        let next = url
+            .join(location)
+            .map_err(|e| format!("invalid redirect from {url}: {e}"))?;
+        let next = checked_url(next.to_string(), caps)?;
+        return fetch_body(agent, next, caps, redirects + 1);
+    }
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_string(&mut body)
+        .map_err(|e| format!("web_fetch failed: {e}"))?;
+    if body.len() > MAX_FILE_BYTES as usize {
+        return Err(format!(
+            "web_fetch response exceeds {} bytes",
+            MAX_FILE_BYTES
+        ));
+    }
+    Ok(body)
 }
 
 fn html_to_text(html: &str) -> String {
@@ -835,36 +1148,76 @@ fn require_net(caps: &[Cap], host: &str) -> Result<(), String> {
 
 // ---------------------------------------------------------------- capabilities
 
+/// A path resolved relative to an authorized directory handle. All subsequent filesystem
+/// operations use `dir`, so symlinks and `..` cannot escape the selected capability root.
+struct FsTarget {
+    dir: Dir,
+    relative: PathBuf,
+}
+
+fn fs_target(
+    workspace: &str,
+    sandbox: &str,
+    caps: &[Cap],
+    kind: &str,
+    path: &Path,
+) -> Result<FsTarget, String> {
+    if kind == "FS_WRITE" {
+        require_sandbox_write(sandbox, workspace, path)?;
+    }
+    for cap in caps.iter().filter(|cap| cap.kind == kind) {
+        let (root, relative) = if cap.resource == "*" {
+            // An unbounded write capability is still constrained by workspace-write. Use the cwd
+            // itself as the directory capability rather than checking a path and then reopening it.
+            let root = if kind == "FS_WRITE" && sandbox == "workspace-write" {
+                normalize(Path::new(workspace))
+            } else {
+                PathBuf::from("/")
+            };
+            match path.strip_prefix(&root) {
+                Ok(relative) => (root, relative.to_path_buf()),
+                Err(_) => continue,
+            }
+        } else if let Some(prefix) = cap.resource.strip_suffix("/*") {
+            let root = normalize(Path::new(prefix));
+            if !path.starts_with(&root) {
+                continue;
+            }
+            let relative = path.strip_prefix(&root).unwrap().to_path_buf();
+            (root, relative)
+        } else {
+            let exact = normalize(Path::new(&cap.resource));
+            if path != exact {
+                continue;
+            }
+            let root = exact
+                .parent()
+                .unwrap_or_else(|| Path::new("/"))
+                .to_path_buf();
+            let relative = exact.file_name().map(PathBuf::from).unwrap_or_default();
+            (root, relative)
+        };
+        let relative = if relative.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            relative
+        };
+        let dir = Dir::open_ambient_dir(&root, ambient_authority())
+            .map_err(|e| format!("cannot open capability root {}: {e}", root.display()))?;
+        return Ok(FsTarget { dir, relative });
+    }
+    Err(format!(
+        "capability denied: {kind} does not grant {kind} on {}",
+        path.display()
+    ))
+}
+
 fn require_kind(caps: &[Cap], kind: &str) -> Result<(), String> {
     if caps.iter().any(|cap| cap.kind == kind) {
         Ok(())
     } else {
         Err(format!("capability denied: missing {}", kind))
     }
-}
-
-fn require_fs(caps: &[Cap], kind: &str, path: &Path) -> Result<(), String> {
-    if caps.iter().any(|cap| cap.kind == kind && scope_allows(&cap.resource, path)) {
-        Ok(())
-    } else {
-        Err(format!(
-            "capability denied: {} does not grant {} on {}",
-            kind,
-            kind,
-            path.display()
-        ))
-    }
-}
-
-fn scope_allows(resource: &str, path: &Path) -> bool {
-    if resource == "*" {
-        return true;
-    }
-    let value = path.to_string_lossy();
-    if let Some(prefix) = resource.strip_suffix("/*") {
-        return value.starts_with(prefix);
-    }
-    value == resource
 }
 
 fn require_sandbox_write(sandbox: &str, workspace: &str, path: &Path) -> Result<(), String> {
@@ -939,7 +1292,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn result_frame(call_id: &str, ok: bool, text: &str, error: &str, exit_code: i64, duration_ms: u64) -> Value {
+fn result_frame(
+    call_id: &str,
+    ok: bool,
+    text: &str,
+    error: &str,
+    exit_code: i64,
+    duration_ms: u64,
+) -> Value {
     json!({
         "type": "result",
         "callId": call_id,
@@ -951,8 +1311,19 @@ fn result_frame(call_id: &str, ok: bool, text: &str, error: &str, exit_code: i64
     })
 }
 
-fn emit_result(shared: &Shared, call_id: &str, ok: bool, text: &str, error: &str, exit_code: i64, duration_ms: u64) -> std::io::Result<()> {
-    send(shared, &result_frame(call_id, ok, text, error, exit_code, duration_ms))
+fn emit_result(
+    shared: &Shared,
+    call_id: &str,
+    ok: bool,
+    text: &str,
+    error: &str,
+    exit_code: i64,
+    duration_ms: u64,
+) -> std::io::Result<()> {
+    send(
+        shared,
+        &result_frame(call_id, ok, text, error, exit_code, duration_ms),
+    )
 }
 
 fn verify_hmac(token: &str, canonical: &str, given: &str) -> bool {

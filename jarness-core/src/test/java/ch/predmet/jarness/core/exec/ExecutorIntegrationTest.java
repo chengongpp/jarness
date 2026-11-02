@@ -134,6 +134,70 @@ class ExecutorIntegrationTest {
     }
 
     @Test
+    void resourceScopesUsePathComponentsAndContainSymlinks() throws Exception {
+        Path scope = Files.createDirectories(workspace.resolve("scope"));
+        Path outside = Files.writeString(workspace.resolve("outside.txt"), "outside secret");
+        Path sibling = Files.writeString(workspace.resolve("scope-secret.txt"), "sibling secret");
+        Files.createSymbolicLink(scope.resolve("link.txt"), outside);
+        CapabilitySet scoped = CapabilitySet.of(
+                new Capability("scope-read", CapKind.FS_READ, scope + "/*", null),
+                new Capability("scope-write", CapKind.FS_WRITE, scope + "/*", null));
+
+        ExecResult prefix = provider.invoke(new ExecRequest("prefix", "fs.read",
+                Map.of("path", sibling.toString()), null, ToolMode.SYNC, "prefix",
+                workspace.toString(), "full-access", scoped, "default"));
+        assertFalse(prefix.ok(), "a /scope/* grant must not cover /scope-secret.txt");
+
+        ExecResult linkedRead = provider.invoke(new ExecRequest("linked-read", "fs.read",
+                Map.of("path", scope.resolve("link.txt").toString()), null, ToolMode.SYNC, "linked-read",
+                workspace.toString(), "workspace-write", scoped, "default"));
+        assertFalse(linkedRead.ok(), "a scoped read must not follow a symlink outside its root");
+
+        ExecResult linkedWrite = provider.invoke(new ExecRequest("linked-write", "fs.write",
+                Map.of("path", scope.resolve("link.txt").toString(), "content", "overwritten"),
+                null, ToolMode.SYNC, "linked-write", workspace.toString(), "workspace-write",
+                scoped, "default"));
+        assertFalse(linkedWrite.ok(), "a scoped write must not follow a symlink outside its root");
+        assertEquals("outside secret", Files.readString(outside));
+
+        ExecResult newFile = provider.invoke(new ExecRequest("new-scoped-file", "fs.write",
+                Map.of("path", scope.resolve("nested/new.txt").toString(), "content", "safe"),
+                null, ToolMode.SYNC, "new-scoped-file", workspace.toString(), "workspace-write",
+                scoped, "default"));
+        assertTrue(newFile.ok(), newFile.error());
+        assertEquals("safe", Files.readString(scope.resolve("nested/new.txt")));
+
+        ExecResult glob = provider.invoke(new ExecRequest("scoped-glob", "fs.glob",
+                Map.of("path", scope.toString(), "pattern", "*"), null, ToolMode.SYNC,
+                "scoped-glob", workspace.toString(), "workspace-write", scoped, "default"));
+        assertTrue(glob.ok(), glob.error());
+        assertFalse(glob.text().contains("link.txt"), "recursive search must not follow symlinks");
+
+        ExecResult grep = provider.invoke(new ExecRequest("scoped-grep", "fs.grep",
+                Map.of("path", scope.toString(), "pattern", "outside secret"), null, ToolMode.SYNC,
+                "scoped-grep", workspace.toString(), "workspace-write", scoped, "default"));
+        assertTrue(grep.ok(), grep.error());
+        assertFalse(grep.text().contains("outside secret"), "grep must not read the symlink target");
+    }
+
+    @Test
+    void symlinkedWorkdirCannotEscapeWorkspace() throws Exception {
+        Path scope = Files.createDirectories(workspace.resolve("exec-scope"));
+        Path outside = Files.createTempDirectory("jarness-exec-outside");
+        try {
+            Files.createSymbolicLink(scope.resolve("linked-dir"), outside);
+            ExecResult result = provider.invoke(new ExecRequest("symlink-workdir", "exec.run",
+                    Map.of("command", "pwd", "workdir", scope.resolve("linked-dir").toString()),
+                    null, ToolMode.SYNC, "symlink-workdir", workspace.toString(), "workspace-write",
+                    caps(CapKind.EXEC), "default"));
+            assertFalse(result.ok());
+            assertTrue(result.error().contains("outside the workspace"), result.error());
+        } finally {
+            Files.deleteIfExists(outside);
+        }
+    }
+
+    @Test
     void duplicateInFlightCallIdIsRejectedInsteadOfCrossTalking() throws Exception {
         CapabilitySet full = caps(CapKind.EXEC);
         CompletableFuture<ExecResult> first = CompletableFuture.supplyAsync(() -> provider.invoke(
