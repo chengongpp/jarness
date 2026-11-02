@@ -23,6 +23,16 @@ public interface Observation extends AutoCloseable {
     List<EventRecord> events(String sessionId, int fromTurn);
 
     /**
+     * Read committed events from an explicit namespace's store.
+     *
+     * @param namespaceId namespace id
+     * @param sessionId   session id
+     * @param fromTurn    first turn index
+     * @return events in commit order
+     */
+    List<EventRecord> events(String namespaceId, String sessionId, int fromTurn);
+
+    /**
      * Subscribe to new events of one session. Existing events are not replayed; use
      * {@link #events} for that.
      *
@@ -31,6 +41,16 @@ public interface Observation extends AutoCloseable {
      * @return a registration whose {@code close()} stops delivery
      */
     AutoCloseable subscribe(String sessionId, Consumer<EventRecord> consumer);
+
+    /**
+     * Subscribe to new events in an explicit namespace store.
+     *
+     * @param namespaceId namespace id
+     * @param sessionId   session id
+     * @param consumer    callback
+     * @return a registration whose close stops delivery
+     */
+    AutoCloseable subscribe(String namespaceId, String sessionId, Consumer<EventRecord> consumer);
 
     @Override
     void close();

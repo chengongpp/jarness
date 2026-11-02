@@ -122,7 +122,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         this.registry = new RegistryImpl(() -> this);
         this.stores = new LinkedHashMap<>();
         this.sessionStore = store(config.sessionStoreUrl());
-        this.observation = new ObservationImpl(sessionStore, java.time.Duration.ofMillis(
+        this.observation = new ObservationImpl(sessionStore, () -> this, java.time.Duration.ofMillis(
                 config.raw().integer("observe.poll_ms", 250)));
         this.loopHooks = new LoopHookRegistryImpl();
         this.namespaces = buildNamespaces(sessionStore);

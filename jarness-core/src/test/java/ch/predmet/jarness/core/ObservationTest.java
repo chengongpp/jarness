@@ -5,7 +5,10 @@ import ch.predmet.jarness.api.agent.Agent;
 import ch.predmet.jarness.api.agent.AgentRequest;
 import ch.predmet.jarness.api.config.JarnessLayout;
 import ch.predmet.jarness.api.provider.ModelRef;
+import ch.predmet.jarness.api.namespace.NamespaceMetadata;
+import ch.predmet.jarness.api.namespace.NamespaceSpec;
 import ch.predmet.jarness.api.session.EventRecord;
+import ch.predmet.jarness.core.session.LocalSessionStore;
 import ch.predmet.jarness.core.exec.ScriptedProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +50,37 @@ class ObservationTest {
             assertFalse(received.isEmpty());
             assertTrue(runtime.observation().events(agent.session().id(), 0).stream()
                     .anyMatch(e -> e.type().equals("turn.committed")));
+        }
+    }
+
+    @Test
+    void independentNamespaceStoreIsObservable() throws Exception {
+        LocalSessionStore isolated = new LocalSessionStore("jdbc:sqlite:" + base.resolve("isolated.db"));
+        try (JarnessRuntime runtime = runtime()) {
+            runtime.providers().register(new ScriptedProvider());
+            runtime.providers().setDefault(new ModelRef(ScriptedProvider.ID, ScriptedProvider.MODEL));
+            runtime.namespaces().create(new NamespaceSpec("isolated",
+                    NamespaceMetadata.of("isolated", base.resolve("isolated-cwd"),
+                            runtime.namespaces().defaultNs().metadata().defaults()),
+                    isolated, "void", ""));
+            Agent agent = runtime.spawn(AgentRequest.builder("void").namespace("isolated").build());
+            CountDownLatch latch = new CountDownLatch(1);
+            try (AutoCloseable ignored = runtime.observation().subscribe("isolated", agent.session().id(),
+                    event -> {
+                        if (event.type().equals("turn.committed")) {
+                            latch.countDown();
+                        }
+                    })) {
+                agent.submit("hi").get(10, TimeUnit.SECONDS);
+                assertTrue(latch.await(5, TimeUnit.SECONDS));
+            }
+            assertTrue(runtime.observation().events("isolated", agent.session().id(), 0).stream()
+                    .anyMatch(event -> event.type().equals("turn.committed")));
+            assertTrue(runtime.observation().events(agent.session().id(), 0).stream()
+                    .anyMatch(event -> event.type().equals("turn.committed")),
+                    "session-only lookup should discover the non-default image store");
+        } finally {
+            isolated.close();
         }
     }
 

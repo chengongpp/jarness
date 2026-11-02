@@ -1,5 +1,7 @@
 package ch.predmet.jarness.core.observe;
 
+import ch.predmet.jarness.api.JarnessRuntime;
+import ch.predmet.jarness.api.namespace.Namespace;
 import ch.predmet.jarness.api.observe.Observation;
 import ch.predmet.jarness.api.session.EventRecord;
 import ch.predmet.jarness.api.session.SessionStore;
@@ -7,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,30 +20,30 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
- * Polling CDC over the event log.
+ * Polling CDC over committed event logs in every namespace store.
  *
- * <p>Events are written in the turn's transaction, so the feed never exposes rolled-back work.
- * Subscribers start at "now"; {@link #events} is the replay path.</p>
+ * <p>The session-only API discovers the owning store from the image table. The namespace overload
+ * is explicit and avoids discovery for embedders; both share the same subscription machinery.</p>
  */
 public final class ObservationImpl implements Observation {
 
     private static final Logger LOG = LoggerFactory.getLogger(ObservationImpl.class);
 
-    private final SessionStore store;
+    private final SessionStore defaultStore;
+    private final java.util.function.Supplier<JarnessRuntime> runtime;
     private final Map<String, List<Subscriber>> subscribers = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> seen = new ConcurrentHashMap<>();
+    private final Map<String, SessionStore> resolved = new ConcurrentHashMap<>();
     private final ScheduledExecutorService poller;
     private volatile boolean closed;
 
     private record Subscriber(Consumer<EventRecord> consumer) {
     }
 
-    /**
-     * @param store    image store
-     * @param interval poll interval
-     */
-    public ObservationImpl(SessionStore store, Duration interval) {
-        this.store = store;
+    public ObservationImpl(SessionStore defaultStore, java.util.function.Supplier<JarnessRuntime> runtime,
+                           Duration interval) {
+        this.defaultStore = defaultStore;
+        this.runtime = runtime;
         this.poller = Executors.newSingleThreadScheduledExecutor(runnable ->
                 Thread.ofVirtual().name("jarness-observation").unstarted(runnable));
         long millis = Math.max(50, interval == null ? 250 : interval.toMillis());
@@ -51,28 +52,69 @@ public final class ObservationImpl implements Observation {
 
     @Override
     public List<EventRecord> events(String sessionId, int fromTurn) {
-        return store.events(sessionId, fromTurn);
+        return storeFor(null, sessionId).events(sessionId, fromTurn);
+    }
+
+    @Override
+    public List<EventRecord> events(String namespaceId, String sessionId, int fromTurn) {
+        return storeFor(namespaceId, sessionId).events(sessionId, fromTurn);
     }
 
     @Override
     public AutoCloseable subscribe(String sessionId, Consumer<EventRecord> consumer) {
+        return subscribe(null, sessionId, consumer);
+    }
+
+    @Override
+    public AutoCloseable subscribe(String namespaceId, String sessionId, Consumer<EventRecord> consumer) {
         if (closed) {
             throw new IllegalStateException("observation is closed");
         }
+        String key = key(namespaceId, sessionId);
         Subscriber subscriber = new Subscriber(consumer);
-        subscribers.computeIfAbsent(sessionId, key -> new CopyOnWriteArrayList<>()).add(subscriber);
+        subscribers.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>()).add(subscriber);
+        SessionStore store = storeFor(namespaceId, sessionId);
+        resolved.put(key, store);
         // Baseline: do not replay the past through the live feed.
-        Set<String> ids = seen.computeIfAbsent(sessionId, key -> ConcurrentHashMap.newKeySet());
+        Set<String> ids = seen.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet());
         for (EventRecord event : store.events(sessionId, 0)) {
             ids.add(event.id());
         }
-        LOG.debug("observation subscriber attached to session {}", sessionId);
+        LOG.debug("observation subscriber attached to session {} in namespace {}", sessionId,
+                namespaceId == null ? "<discovered>" : namespaceId);
         return () -> {
-            List<Subscriber> list = subscribers.get(sessionId);
+            List<Subscriber> list = subscribers.get(key);
             if (list != null) {
                 list.remove(subscriber);
             }
         };
+    }
+
+    private SessionStore storeFor(String namespaceId, String sessionId) {
+        String key = key(namespaceId, sessionId);
+        SessionStore cached = resolved.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        if (namespaceId != null && !namespaceId.isBlank()) {
+            SessionStore store = runtime.get().namespaces().get(namespaceId).store();
+            resolved.put(key, store);
+            return store;
+        }
+        for (Namespace namespace : runtime.get().namespaces().list()) {
+            SessionStore candidate = namespace.store();
+            try {
+                if (candidate.image(sessionId).isPresent() || !candidate.events(sessionId, 0).isEmpty()) {
+                    resolved.put(key, candidate);
+                    return candidate;
+                }
+            } catch (RuntimeException e) {
+                LOG.debug("could not inspect session {} in namespace {}: {}", sessionId, namespace.id(),
+                        e.getMessage());
+            }
+        }
+        resolved.put(key, defaultStore);
+        return defaultStore;
     }
 
     private void poll() {
@@ -83,12 +125,14 @@ public final class ObservationImpl implements Observation {
             if (entry.getValue().isEmpty()) {
                 continue;
             }
-            Set<String> ids = seen.computeIfAbsent(entry.getKey(), key -> ConcurrentHashMap.newKeySet());
+            String key = entry.getKey();
+            String sessionId = key.substring(key.indexOf('\0') + 1);
+            Set<String> ids = seen.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet());
             List<EventRecord> events;
             try {
-                events = store.events(entry.getKey(), 0);
+                events = resolved.get(key).events(sessionId, 0);
             } catch (RuntimeException e) {
-                LOG.debug("could not poll events of session {}: {}", entry.getKey(), e.getMessage());
+                LOG.debug("could not poll events of session {}: {}", sessionId, e.getMessage());
                 continue;
             }
             for (EventRecord event : events) {
@@ -106,11 +150,16 @@ public final class ObservationImpl implements Observation {
         }
     }
 
+    private static String key(String namespaceId, String sessionId) {
+        return (namespaceId == null ? "" : namespaceId) + '\0' + sessionId;
+    }
+
     @Override
     public void close() {
         closed = true;
         poller.shutdownNow();
         subscribers.clear();
         seen.clear();
+        resolved.clear();
     }
 }

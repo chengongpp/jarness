@@ -281,6 +281,23 @@ class SupervisorTreeTest {
     }
 
     @Test
+    void platformCapabilitiesCannotBeGrantedToOrdinaryAgents() throws IOException {
+        try (JarnessRuntime runtime = runtime(null)) {
+            runtime.namespaces().create(new NamespaceSpec("privileged",
+                    NamespaceMetadata.of("privileged", base.resolve("privileged-cwd"),
+                            CapabilitySet.grant("ns.privileged", List.of(
+                                    CapabilityRequest.of(CapKind.PLATFORM),
+                                    CapabilityRequest.of(CapKind.NAMESPACE)))),
+                    runtime.sessions(), "void", ""));
+            SpawnDeniedException denied = assertThrows(SpawnDeniedException.class,
+                    () -> runtime.supervisor().spawn(0, "privileged",
+                            AgentManifest.builder("void").build(), null, null));
+            assertEquals(SpawnDeniedException.Reason.CAPABILITY, denied.reason());
+            assertTrue(denied.getMessage().contains("pid-0"), denied.getMessage());
+        }
+    }
+
+    @Test
     void namespacesCanUseAnIndependentStore() throws IOException {
         JarnessRuntime runtime = runtime(null);
         Path otherDb = base.resolve("other-ns.db");

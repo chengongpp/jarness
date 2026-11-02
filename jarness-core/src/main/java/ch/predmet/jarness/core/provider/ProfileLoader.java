@@ -3,6 +3,7 @@ package ch.predmet.jarness.core.provider;
 import ch.predmet.jarness.api.provider.ModelInfo;
 import ch.predmet.jarness.api.provider.ProviderKind;
 import ch.predmet.jarness.api.provider.ProviderProfile;
+import ch.predmet.jarness.core.config.JsonConfigView;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.toml.TomlMapper;

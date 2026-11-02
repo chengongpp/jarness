@@ -323,6 +323,11 @@ public final class SupervisorImpl implements Supervisor {
             CapabilitySet effective = requested
                     .intersect(base)
                     .intersect(namespace.metadata().defaults());
+            if (effective.containsKind(CapKind.PLATFORM) || effective.containsKind(CapKind.NAMESPACE)) {
+                throw deny(SpawnDeniedException.Reason.CAPABILITY,
+                        "platform and namespace capabilities are reserved for the pid-0 super agent",
+                        parentPid, nsId, manifest);
+            }
             long pid = nextPid.getAndIncrement();
             CapabilitySet assigned = assignCapIds(effective, base, pid);
             AgentRequest normalized = request != null ? request
