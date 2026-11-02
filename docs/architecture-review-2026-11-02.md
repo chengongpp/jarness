@@ -30,6 +30,10 @@ standalone JVM runtime，不是长驻 daemon 的客户端；启动时也不会�
 | `2b8fe3f` | 显式 LOCAL 模式也检查 FS/NET resource scope；web_fetch 逐跳检查 redirect；web_search 检查后端域名 | LOCAL sibling/symlink/redirect |
 | `21d18db` | restart 保留完整创建参数；fork 保留 manifest 字段；transport/parse 可重试；模型请求受剩余 token/deadline 约束 | retry、fork、maxTokens |
 
+**最终验证**：`mvn -q clean package` 共 115 个测试，0 failure/error/skipped；`make dist` 成功重建
+`dist/jarness.jar` 与 executor；`make it` 使用已安装端点跑 4 个 live 测试全部通过，覆盖真实模型工具
+写入/读回。`./jn namespaces` 与 shaded jar `--version` 冒烟通过。
+
 ## 3. 明确未实现或仅部分实现
 
 ### P0：控制面与启动恢复
