@@ -42,12 +42,17 @@ public interface Tool {
         return ToolForm.LOCAL;
     }
 
-    /** @return the executor tool name; only meaningful for {@link ToolForm#RELAY}. */
+    /**
+     * @return the executor tool name; only meaningful for {@link ToolForm#RELAY}
+     *
+     * <p>The agent dispatcher routes every RELAY declaration through the execution registry. A mod
+     * only needs to override {@link #form()} and this method; it does not need a core wrapper.</p>
+     */
     default String relayName() {
         return name();
     }
 
-    /** @return the call mode; only {@link ToolMode#SYNC} is wired into the P2 loop. */
+    /** @return the call mode; ASYNC completions are delivered through the agent mailbox. */
     default ToolMode mode() {
         return ToolMode.SYNC;
     }

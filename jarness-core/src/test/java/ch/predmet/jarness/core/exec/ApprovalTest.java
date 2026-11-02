@@ -89,6 +89,24 @@ class ApprovalTest {
         }
     }
 
+    @Test
+    void neverAlsoBlocksMutatingIpcTools() throws Exception {
+        try (JarnessRuntime runtime = runtime("""
+                [approval]
+                policy = "never"
+                allow = []
+                """)) {
+            runtime.providers().register(new ScriptedProvider("shm",
+                    "{\"op\":\"write\",\"name\":\"tasks\",\"cell\":\"one\",\"value\":\"open\"}"));
+            Agent agent = spawn(runtime, "approval-ipc");
+            TurnResult result = agent.submit("write shared state").get(30, TimeUnit.SECONDS);
+            assertEquals(TurnState.COMPLETED, result.state(), result.error());
+            assertTrue(agent.session().messages().stream().flatMap(m -> m.toolResults().stream())
+                    .anyMatch(r -> r.text().contains("blocked by approval policy")));
+            assertTrue(runtime.ipc().shms("default").isEmpty(), "the mutating shm call must not execute");
+        }
+    }
+
     private JarnessRuntime runtime(String extra) throws Exception {
         return runtime(extra, "ws");
     }

@@ -52,6 +52,19 @@ public final class RelayTool implements Tool {
 
     @Override
     public ToolOutcome invoke(ToolInvocation invocation, ToolContext ctx) {
+        return dispatch(this, invocation, ctx);
+    }
+
+    /**
+     * Dispatch any declarative {@link ToolForm#RELAY} tool. Mods do not need to link this core
+     * wrapper: the agent loop calls this path from the API-level {@code form()/relayName()} contract.
+     *
+     * @param declaration tool declaration
+     * @param invocation  parsed invocation
+     * @param ctx         calling context
+     * @return the executor result as a tool observation
+     */
+    public static ToolOutcome dispatch(Tool declaration, ToolInvocation invocation, ToolContext ctx) {
         if (invocation.bool("run_in_background", false)) {
             return ToolOutcome.error("background execution is not supported by the relay executor yet");
         }
@@ -60,10 +73,10 @@ public final class RelayTool implements Tool {
                 ? UUID.randomUUID().toString() : invocation.id());
         ExecRequest request = new ExecRequest(
                 callId,
-                relayName,
+                declaration.relayName(),
                 invocation.arguments(),
                 deadline,
-                mode(),
+                declaration.mode(),
                 callId,
                 ctx.workspace().toString(),
                 ctx.sandbox().id(),

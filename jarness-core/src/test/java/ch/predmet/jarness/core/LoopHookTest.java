@@ -39,6 +39,45 @@ class LoopHookTest {
         }
     }
 
+    @Test
+    void hooksLoadedMidTurnWaitForTheNextSnapshot() throws Exception {
+        try (JarnessRuntime runtime = runtime()) {
+            runtime.providers().register(new ScriptedProvider());
+            runtime.providers().setDefault(new ModelRef(ScriptedProvider.ID, ScriptedProvider.MODEL));
+            AtomicInteger lateCalls = new AtomicInteger();
+            LoopHook late = new LoopHook() {
+                @Override
+                public String name() {
+                    return "late";
+                }
+
+                @Override
+                public void beforeTurn(Agent agent, Turn turn) {
+                    lateCalls.incrementAndGet();
+                }
+            };
+            runtime.loopHooks().register(new LoopHook() {
+                @Override
+                public String name() {
+                    return "registrar";
+                }
+
+                @Override
+                public void beforeStep(Agent agent, Turn turn, int step) {
+                    if (step == 0) {
+                        runtime.loopHooks().register(late);
+                    }
+                }
+            });
+            Agent agent = runtime.spawn(AgentRequest.builder("void").build());
+
+            agent.submit("first").get(10, TimeUnit.SECONDS);
+            assertEquals(0, lateCalls.get(), "a running turn must keep its original loop hooks");
+            agent.submit("second").get(10, TimeUnit.SECONDS);
+            assertEquals(1, lateCalls.get(), "the next turn must see the dynamically added hook");
+        }
+    }
+
     private JarnessRuntime runtime() throws Exception {
         JarnessLayout layout = JarnessLayout.of(base);
         Files.createDirectories(layout.configDir());

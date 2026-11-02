@@ -27,6 +27,7 @@ public final class ScriptedProvider implements Provider {
             Map.of(), ConfigView.empty());
     private final String tool;
     private final String arguments;
+    private volatile ChatRequest lastRequest;
     private int calls;
 
     public ScriptedProvider() {
@@ -65,6 +66,7 @@ public final class ScriptedProvider implements Provider {
 
     @Override
     public ChatResponse complete(ChatRequest request, StreamSink sink) {
+        lastRequest = request;
         calls++;
         if (calls == 1) {
             ContentBlock.ToolCall call = new ContentBlock.ToolCall("call-1", tool, arguments);
@@ -73,5 +75,10 @@ public final class ScriptedProvider implements Provider {
         }
         return new ChatResponse("r2", new Message(null, Role.ASSISTANT,
                 List.of(new ContentBlock.Text("done")), null), new Usage(12, 1, 0), "stop", "");
+    }
+
+    /** @return the most recent request, for assertions on model-visible tools. */
+    public ChatRequest lastRequest() {
+        return lastRequest;
     }
 }

@@ -55,10 +55,12 @@ import ch.predmet.jarness.api.supervisor.Supervisor;
 import ch.predmet.jarness.api.tool.Tool;
 import ch.predmet.jarness.api.tool.ToolContext;
 import ch.predmet.jarness.api.tool.ToolException;
+import ch.predmet.jarness.api.tool.ToolForm;
 import ch.predmet.jarness.api.tool.ToolInvocation;
 import ch.predmet.jarness.api.tool.ToolMode;
 import ch.predmet.jarness.api.tool.ToolOutcome;
 import ch.predmet.jarness.api.tool.ToolSpec;
+import ch.predmet.jarness.core.exec.RelayTool;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -79,12 +81,12 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -134,7 +136,7 @@ public final class AgentImpl implements Agent {
     private final Logger log;
     private final CompletableFuture<ExitStatus> exit = new CompletableFuture<>();
 
-    private final BlockingQueue<Submitted> queue = new LinkedBlockingQueue<>();
+    private final BlockingQueue<Submitted> queue;
     private final Thread worker;
     private final AtomicReference<AgentState> state = new AtomicReference<>(AgentState.NEW);
     private final MailboxImpl mailbox;
@@ -193,6 +195,8 @@ public final class AgentImpl implements Agent {
                 : template.id() + "-" + pid;
         this.log = LoggerFactory.getLogger("ch.predmet.jarness.agent." + id);
         this.mailbox = new MailboxImpl(runtime.config().raw().integer("mailbox.capacity", 256));
+        this.queue = new ArrayBlockingQueue<>(Math.max(1,
+                runtime.config().raw().integer("mailbox.submission_capacity", 256)));
 
         Path ws = namespace.metadata().cwd();
         if (ws.equals(runtime.layout().baseDir())) {
@@ -499,9 +503,23 @@ public final class AgentImpl implements Agent {
                     new IllegalStateException("agent " + id + " is not accepting work (" + current + ")"));
             return future;
         }
-        queue.offer(new Submitted(input, future));
+        if (!queue.offer(new Submitted(input, future))) {
+            future.completeExceptionally(new IllegalStateException("agent " + id
+                    + " submission queue is full (capacity " + queue.remainingCapacity() + queue.size() + ")"));
+            return future;
+        }
         touch();
         return future;
+    }
+
+    @Override
+    public boolean deliver(MailboxMessage message) {
+        AgentState current = state.get();
+        if (stopFlag || current == AgentState.STOPPED || current == AgentState.FAILED
+                || current == AgentState.SUSPENDED || current == AgentState.DEACTIVATING) {
+            return false;
+        }
+        return mailbox.offer(message);
     }
 
     @Override
@@ -547,7 +565,7 @@ public final class AgentImpl implements Agent {
         Objects.requireNonNull(timeout, "timeout");
         long deadline = System.nanoTime() + timeout.toNanos();
         while (true) {
-            if (!busy && queue.isEmpty()) {
+            if (!busy && queue.isEmpty() && mailbox.size() == 0 && pendingAsync.isEmpty()) {
                 return true;
             }
             long remaining = deadline - System.nanoTime();
@@ -663,6 +681,11 @@ public final class AgentImpl implements Agent {
     private void runLoop() {
         try {
             while (!stopFlag) {
+                MailboxMessage message = mailbox.poll(java.time.Duration.ZERO).orElse(null);
+                if (message != null) {
+                    handleMailbox(message);
+                    continue;
+                }
                 Submitted sub;
                 try {
                     sub = queue.poll(100L, TimeUnit.MILLISECONDS);
@@ -670,14 +693,9 @@ public final class AgentImpl implements Agent {
                     Thread.currentThread().interrupt();
                     break;
                 }
-                if (sub == null) {
-                    MailboxMessage message = mailbox.poll(java.time.Duration.ZERO).orElse(null);
-                    if (message != null) {
-                        handleMailbox(message);
-                    }
-                    continue;
+                if (sub != null) {
+                    runTurn(sub);
                 }
-                runTurn(sub);
             }
         } catch (Throwable t) {
             log.error("agent worker died", t);
@@ -727,6 +745,7 @@ public final class AgentImpl implements Agent {
         touch();
         mailbox.close();
         asyncExecutor.shutdownNow();
+        saveImageQuietly();
         pendingAsync.clear();
         ctx.closeHooks();
         emit(HookPoint.AGENT_STOPPED, AgentEvent.of(this, stopReason));
@@ -857,7 +876,7 @@ public final class AgentImpl implements Agent {
 
                 ChatResponse response;
                 try {
-                    Provider provider = runtime.providers().providerFor(event.model());
+                    Provider provider = providerFor(event.model());
                     ChatRequest chatRequest = new ChatRequest(event.model(), event.system(), event.messages(),
                             event.tools(), event.maxTokens(), event.temperature(), List.of(), Map.of());
                     response = completeWithRetry(provider, chatRequest);
@@ -1015,14 +1034,16 @@ public final class AgentImpl implements Agent {
         if (snapshot != null) {
             for (String name : ctx.visibleToolNames()) {
                 Tool tool = snapshot.tool(name);
-                if (tool != null) {
+                if (tool != null && hasRequiredCapabilities(tool)) {
                     specs.add(tool.spec());
                 }
             }
             return specs;
         }
         for (Tool tool : runtime.tools().resolve(ctx.visibleToolNames())) {
-            specs.add(tool.spec());
+            if (hasRequiredCapabilities(tool)) {
+                specs.add(tool.spec());
+            }
         }
         return specs;
     }
@@ -1030,6 +1051,7 @@ public final class AgentImpl implements Agent {
     private void executeToolCall(Turn turn, ContentBlock.ToolCall call) {
         Map<String, Object> args = Map.of();
         String raw = call.arguments() == null || call.arguments().isBlank() ? "{}" : call.arguments();
+        String argumentsError = null;
         try {
             Map<String, Object> parsed = MAPPER.readValue(raw, new TypeReference<>() {
             });
@@ -1037,8 +1059,8 @@ public final class AgentImpl implements Agent {
                 args = parsed;
             }
         } catch (Exception e) {
-            log.warn("could not parse arguments of tool call \"{}\"; using empty arguments: {}",
-                    call.name(), e.getMessage());
+            argumentsError = "invalid JSON arguments for tool \"" + call.name() + "\": " + e.getMessage();
+            log.warn("could not parse arguments of tool call \"{}\": {}", call.name(), e.getMessage());
         }
 
         ToolInvocation invocation = new ToolInvocation(call.callId(), call.name(), args, raw);
@@ -1051,6 +1073,8 @@ public final class AgentImpl implements Agent {
         ToolOutcome outcome;
         if (before.skipped()) {
             outcome = ToolOutcome.denied(before.skipReason());
+        } else if (argumentsError != null) {
+            outcome = ToolOutcome.error(argumentsError);
         } else if (tool == null) {
             outcome = ToolOutcome.error("unknown tool \"" + call.name() + "\"");
         } else if (!ctx.visibleToolNames().contains(tool.name())) {
@@ -1076,7 +1100,7 @@ public final class AgentImpl implements Agent {
                     toolCallTotal.incrementAndGet();
                     ToolContext toolContext = toolContextFactory.create(this,
                             () -> turnCancel || stopFlag, this::currentCancelReason);
-                    outcome = tool.invoke(before.invocation(), toolContext);
+                    outcome = invokeTool(tool, before.invocation(), toolContext);
                     if (outcome == null) {
                         outcome = ToolOutcome.error("tool returned no outcome");
                     }
@@ -1102,6 +1126,14 @@ public final class AgentImpl implements Agent {
         touch();
     }
 
+    /** Route RELAY declarations centrally; an API-only mod need not wrap its tool in a core class. */
+    private ToolOutcome invokeTool(Tool tool, ToolInvocation invocation, ToolContext context) throws Exception {
+        if (tool.form() == ToolForm.RELAY) {
+            return RelayTool.dispatch(tool, invocation, context);
+        }
+        return tool.invoke(invocation, context);
+    }
+
     /**
      * Accept an asynchronous tool call. The current turn records {@code accepted}; the completion is
      * delivered to the mailbox and becomes a later turn.
@@ -1120,22 +1152,43 @@ public final class AgentImpl implements Agent {
             try {
                 ToolContext toolContext = toolContextFactory.create(this,
                         () -> turnCancel || stopFlag, this::currentCancelReason);
-                ToolOutcome result = tool.invoke(invocation, toolContext);
+                ToolOutcome result = invokeTool(tool, invocation, toolContext);
                 ToolOutcome finalResult = result == null ? ToolOutcome.error("tool returned no outcome") : result;
-                pendingAsync.remove(callId);
-                mailbox.offer(MailboxMessage.asyncResult(pid,
-                        new MailboxMessage.AsyncResult(callId, tool.name(), finalResult.ok(),
-                                finalResult.modelText())));
+                completeAsync(callId, tool.name(), truncate(finalResult));
             } catch (Throwable t) {
-                pendingAsync.remove(callId);
                 log.warn("async tool \"{}\" failed", tool.name(), t);
-                mailbox.offer(MailboxMessage.asyncResult(pid,
-                        new MailboxMessage.AsyncResult(callId, tool.name(), false,
-                                "tool failed: " + t.getMessage())));
+                completeAsync(callId, tool.name(), ToolOutcome.error("tool failed: " + t.getMessage()));
             }
         });
         return ToolOutcome.ok("accepted async call " + callId + " (tool " + tool.name()
                 + "); the result will arrive as a later turn");
+    }
+
+    /**
+     * Deliver with backpressure. Pending state is cleared only after the mailbox accepts the result;
+     * an agent shutting down leaves it in the image for the explicit resume/reconciliation path.
+     */
+    private void completeAsync(String callId, String tool, ToolOutcome result) {
+        MailboxMessage.AsyncResult payload = new MailboxMessage.AsyncResult(
+                callId, tool, result.ok(), result.modelText());
+        boolean delivered = false;
+        try {
+            while (!stopFlag) {
+                if (mailbox.offer(MailboxMessage.asyncResult(pid, payload))) {
+                    delivered = true;
+                    break;
+                }
+                Thread.sleep(25L);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (delivered) {
+            pendingAsync.remove(callId);
+        } else {
+            log.warn("async result {}/{} was not delivered because the agent is stopping; "
+                    + "its pending marker remains in the saved image", callId, tool);
+        }
     }
 
     /** @return a denial reason when required tool parameters are missing, else {@code null}. */
@@ -1161,6 +1214,17 @@ public final class AgentImpl implements Agent {
             }
         }
         return null;
+    }
+
+    /** @return whether every capability required by the tool is currently held. */
+    private boolean hasRequiredCapabilities(Tool tool) {
+        CapabilitySet held = capabilities.get();
+        for (CapKind kind : tool.requiredCaps()) {
+            if (!held.containsKind(kind)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** @return a denial reason from the approval policy, or {@code null} to run the tool. */
@@ -1197,8 +1261,7 @@ public final class AgentImpl implements Agent {
     }
 
     private boolean hasSideEffects(Tool tool) {
-        Set<CapKind> caps = tool.requiredCaps();
-        return caps.contains(CapKind.FS_WRITE) || caps.contains(CapKind.EXEC) || caps.contains(CapKind.NET);
+        return !tool.spec().readOnly();
     }
 
     private boolean allowlisted(String toolName) {
@@ -1233,9 +1296,24 @@ public final class AgentImpl implements Agent {
 
     // ------------------------------------------------------------- helpers
 
+    /** Resolve a model provider from the pinned turn snapshot, not a concurrently changed registry. */
+    private Provider providerFor(ModelRef model) {
+        Registry.Snapshot snapshot = turnSnapshot;
+        if (snapshot != null) {
+            for (Provider provider : snapshot.providers()) {
+                if (provider.id().equals(model.providerId())) {
+                    return provider;
+                }
+            }
+            throw new IllegalArgumentException("provider " + model.providerId()
+                    + " is not present in turn registry snapshot " + snapshot.version());
+        }
+        return runtime.providers().providerFor(model);
+    }
+
     private int advertisedMaxTokens(ModelRef model) {
         try {
-            Provider provider = runtime.providers().providerFor(model);
+            Provider provider = providerFor(model);
             for (ModelInfo info : provider.models()) {
                 if (info.id().equals(model.modelId())) {
                     return info.defaultMaxTokens();
@@ -1385,7 +1463,9 @@ public final class AgentImpl implements Agent {
     }
 
     private void loopHook(java.util.function.Consumer<LoopHook> invocation) {
-        for (LoopHook hook : runtime.loopHooks().all()) {
+        Registry.Snapshot snapshot = turnSnapshot;
+        List<LoopHook> hooks = snapshot == null ? runtime.loopHooks().all() : snapshot.loopHooks();
+        for (LoopHook hook : hooks) {
             try {
                 invocation.accept(hook);
             } catch (Throwable t) {

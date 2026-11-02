@@ -18,9 +18,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>The direction is the same as the local executor: the executor connects back to the daemon and
  * presents an enrollment token. Each accepted connection becomes a
- * {@link ch.predmet.jarness.api.exec.ExecutionProvider} of kind {@code REMOTE}. TLS is intentionally
- * not enabled here yet; the design's Q36 (whether remote TLS is mandatory, and how secrets rotate)
- * is still open, so this listener is opt-in and defaults to loopback.</p>
+ * {@link ch.predmet.jarness.api.exec.ExecutionProvider} of kind {@code REMOTE}. The listener is
+ * opt-in and defaults to loopback; TLS uses the configured PKCS12 context and never silently falls
+ * back to plaintext when certificate loading fails.</p>
  */
 public final class RemoteExecutorServer implements AutoCloseable {
 
