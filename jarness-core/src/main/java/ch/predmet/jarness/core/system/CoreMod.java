@@ -65,8 +65,10 @@ public final class CoreMod implements JarnessMod {
                         ic.log().info("provider {} ({}) with {} model(s)", profile.id(), profile.kind().id(),
                                 profile.models().size());
                     }
-                    String provider = ic.runtime().config().defaultProvider();
-                    String model = ic.runtime().config().defaultModel();
+                    String provider = ic.runtime().activePreset().provider() != null
+                            ? ic.runtime().activePreset().provider() : ic.runtime().config().defaultProvider();
+                    String model = ic.runtime().activePreset().model() != null
+                            ? ic.runtime().activePreset().model() : ic.runtime().config().defaultModel();
                     if (!provider.isBlank() && !model.isBlank()) {
                         ic.providers().setDefault(new ModelRef(provider, model));
                     } else if (profiles.size() == 1 && !profiles.get(0).models().isEmpty()) {

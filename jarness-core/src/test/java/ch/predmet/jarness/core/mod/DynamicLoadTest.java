@@ -151,6 +151,11 @@ class DynamicLoadTest {
         }
 
         @Override
+        public ch.predmet.jarness.api.preset.Preset activePreset() {
+            return ch.predmet.jarness.api.preset.Preset.all("test");
+        }
+
+        @Override
         public ch.predmet.jarness.api.mod.ModLoader modLoader() {
             return loader;
         }

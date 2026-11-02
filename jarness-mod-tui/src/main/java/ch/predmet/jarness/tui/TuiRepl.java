@@ -31,15 +31,19 @@ final class TuiRepl implements Runnable {
 
     @Override
     public void run() {
-        out.println("jarness " + runtime.version() + " TUI — /help for commands, /quit to exit");
-        String template = runtime.config().defaultTemplate();
-        active = spawn(template, "main");
-        if (active == null) {
-            out.println("tui: could not spawn an agent; exiting TUI");
-            return;
-        }
-        out.println("talking to " + active.name() + " (" + active.id() + ", template " + template + ")");
         try {
+            out.println("jarness " + runtime.version() + " TUI — /help for commands, /quit to exit");
+            String template = runtime.namespaces().defaultNs().defaultTemplateId();
+            if (template == null || template.isBlank()) {
+                out.println("tui: the default namespace has no default template; exiting TUI");
+                return;
+            }
+            active = spawn(template, "main");
+            if (active == null) {
+                out.println("tui: could not spawn an agent; exiting TUI");
+                return;
+            }
+            out.println("talking to " + active.name() + " (" + active.id() + ", template " + template + ")");
             String line;
             while (runtime.isRunning() && (line = in.readLine()) != null) {
                 line = line.trim();
@@ -56,9 +60,11 @@ final class TuiRepl implements Runnable {
             }
         } catch (IOException e) {
             out.println("tui: input failed: " + e.getMessage());
+        } finally {
+            // Every exit path, including initial spawn failure, releases the runtime and lets the
+            // CLI's wait loop terminate instead of leaving a headless process running forever.
+            runtime.close();
         }
-        // /quit or end of input leaves the TUI and stops the runtime.
-        runtime.close();
     }
 
     private void turn(String input) {
@@ -97,7 +103,8 @@ final class TuiRepl implements Runnable {
                     out.printf("%s  %-14s %-8s %-8s turns=%d%n", s.agentId(), s.name(),
                             s.templateId(), s.state(), s.turns()));
             case "/new" -> {
-                String template = parts.length > 1 ? parts[1] : runtime.config().defaultTemplate();
+                String template = parts.length > 1 ? parts[1]
+                        : runtime.namespaces().defaultNs().defaultTemplateId();
                 String name = parts.length > 2 ? parts[2] : null;
                 Agent agent = spawn(template, name);
                 if (agent != null) {

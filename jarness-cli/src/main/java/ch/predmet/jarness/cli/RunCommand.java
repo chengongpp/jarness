@@ -53,7 +53,15 @@ public final class RunCommand implements Callable<Integer> {
         }
         try (JarnessRuntime runtime = Runtimes.build(spec)) {
             runtime.start();
-            String templateId = template != null ? template : runtime.config().defaultTemplate();
+            Main main = (Main) spec.root().userObject();
+            String targetNamespace = main.global().namespace == null
+                    ? ch.predmet.jarness.api.namespace.Namespace.DEFAULT_ID : main.global().namespace;
+            String templateId = template != null ? template
+                    : runtime.namespaces().get(targetNamespace).defaultTemplateId();
+            if (templateId == null || templateId.isBlank()) {
+                throw new IllegalArgumentException("namespace " + targetNamespace
+                        + " has no default template; pass --template");
+            }
             AgentRequest.Builder builder = AgentRequest.builder(templateId).name(name);
             if (sessionId != null) {
                 builder.sessionId(sessionId);
@@ -61,7 +69,6 @@ public final class RunCommand implements Callable<Integer> {
             if (forceResume) {
                 builder.forceResume(true);
             }
-            Main main = (Main) spec.root().userObject();
             if (main.global().namespace != null) {
                 builder.namespace(main.global().namespace);
             }

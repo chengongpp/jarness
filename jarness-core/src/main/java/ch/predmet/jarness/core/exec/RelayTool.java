@@ -65,9 +65,6 @@ public final class RelayTool implements Tool {
      * @return the executor result as a tool observation
      */
     public static ToolOutcome dispatch(Tool declaration, ToolInvocation invocation, ToolContext ctx) {
-        if (invocation.bool("run_in_background", false)) {
-            return ToolOutcome.error("background execution is not supported by the relay executor yet");
-        }
         Instant deadline = ctx.budget().deadline();
         String callId = ctx.agent().id() + ":" + (invocation.id() == null || invocation.id().isBlank()
                 ? UUID.randomUUID().toString() : invocation.id());
@@ -82,6 +79,20 @@ public final class RelayTool implements Tool {
                 ctx.sandbox().id(),
                 ctx.capabilities(),
                 ctx.agent().namespaceId());
+        if (invocation.bool("run_in_background", false)) {
+            String label = invocation.findString("description").filter(text -> !text.isBlank())
+                    .orElse(declaration.relayName());
+            String jobId = ctx.jobs().start(label, handle -> {
+                try {
+                    ExecResult result = ctx.execution().invoke(request);
+                    handle.write(result.modelText());
+                } catch (ExecutionException e) {
+                    handle.write("execution_failed: " + e.getMessage());
+                }
+            });
+            return ToolOutcome.ok("Started background job " + jobId
+                    + "\nCollect with job_output, stop with job_kill.");
+        }
         try {
             ExecResult result = ctx.execution().invoke(request);
             return new ToolOutcome(result.ok(), result.text(), result.structured(), result.error());

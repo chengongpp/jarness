@@ -84,6 +84,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     private final JarnessLayout layout;
     private final JarnessConfig config;
     private final String presetName;
+    private final Preset activePreset;
 
     private final HookBusImpl hookBus;
     private final ToolRegistryImpl toolRegistry;
@@ -109,6 +110,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         this.layout = layout;
         this.config = ConfigLoader.load(layout);
         this.presetName = presetName;
+        this.activePreset = resolvePreset();
         this.hookBus = new HookBusImpl(() -> this);
         this.toolRegistry = new ToolRegistryImpl();
         this.templateRegistry = new AgentTemplateRegistryImpl();
@@ -143,6 +145,11 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
     @Override
     public JarnessConfig config() {
         return config;
+    }
+
+    @Override
+    public Preset activePreset() {
+        return activePreset;
     }
 
     @Override
@@ -239,8 +246,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         if (config.autoStartSupervisor()) {
             supervisor.start();
         }
-        Preset preset = resolvePreset();
-        LoadReport report = modLoader.loadAll(preset);
+        LoadReport report = modLoader.loadAll(activePreset);
         if (!report.ok()) {
             throw new IllegalStateException("mod loading failed:\n" + report.render());
         }
@@ -254,7 +260,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
         warnAboutMissingTemplates();
         hookBus.emit(HookPoint.RUNTIME_START, this);
         log.info("jarness {} started (base {}, preset {}, namespaces {}, mods {})",
-                version(), layout.baseDir(), preset.name(), namespaces.list().stream().map(Namespace::id).toList(),
+                version(), layout.baseDir(), activePreset.name(), namespaces.list().stream().map(Namespace::id).toList(),
                 report.loadedIds());
     }
 
@@ -419,9 +425,12 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
 
     private NamespaceRegistryImpl buildNamespaces(SessionStore defaultStore) {
         List<CapabilityRequest> defaults = defaultCapabilities();
-        ModelProfile defaultModel = config.defaultProvider().isBlank() || config.defaultModel().isBlank()
+        String defaultProvider = activePreset.provider() != null ? activePreset.provider() : config.defaultProvider();
+        String defaultModelId = activePreset.model() != null ? activePreset.model() : config.defaultModel();
+        String defaultTemplate = activePreset.template() != null ? activePreset.template() : config.defaultTemplate();
+        ModelProfile defaultModel = defaultProvider.isBlank() || defaultModelId.isBlank()
                 ? null
-                : ModelProfile.of(new ModelRef(config.defaultProvider(), config.defaultModel()));
+                : ModelProfile.of(new ModelRef(defaultProvider, defaultModelId));
 
         Path defaultCwd = namespaceCwd(config.raw().table("defaults"), Namespace.DEFAULT_ID);
         List<String> defaultExecutionProviders = executionProviders(
@@ -431,7 +440,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
                 CapabilitySet.grant("ns.default", defaults));
         Namespace defaultNamespace = new NamespaceImpl(Namespace.DEFAULT_ID,
                 new NamespaceSpec(Namespace.DEFAULT_ID, defaultMetadata, defaultStore,
-                        blankToNull(config.defaultTemplate()), "", defaultExecutionProviders), true);
+                        blankToNull(defaultTemplate), "", defaultExecutionProviders), true);
         NamespaceRegistryImpl registry = new NamespaceRegistryImpl(defaultNamespace);
 
         ConfigView table = config.raw().table("namespaces");
@@ -446,7 +455,7 @@ public final class JarnessRuntimeImpl implements JarnessRuntime {
             ModelProfile model = view.findString("model").map(text -> ModelProfile.of(ModelRef.parse(text)))
                     .orElse(defaultModel);
             CapabilitySet caps = parseCapabilities("ns." + id, view.stringList("capabilities"), defaults);
-            String template = view.string("template", config.defaultTemplate());
+            String template = view.string("template", defaultTemplate);
             Path cwd = namespaceCwd(view, id);
             List<String> executionProviders = executionProviders(view, defaultExecutionProviders);
             NamespaceMetadata metadata = new NamespaceMetadata(

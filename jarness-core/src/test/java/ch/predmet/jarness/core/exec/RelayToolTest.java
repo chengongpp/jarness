@@ -20,6 +20,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -97,6 +98,44 @@ class RelayToolTest {
             assertEquals(TurnState.COMPLETED, result.state(), result.error());
             assertTrue(agent.session().messages().stream().flatMap(m -> m.toolResults().stream())
                     .anyMatch(r -> r.ok() && r.text().contains("routed by declaration")));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("jarness.executor");
+            } else {
+                System.setProperty("jarness.executor", previous);
+            }
+        }
+    }
+
+    @Test
+    void relayBackgroundBashUsesTheJobRegistry() throws Exception {
+        Path binary = Path.of("..").toAbsolutePath().normalize()
+                .resolve("dist/executor/jarness-executor");
+        assumeTrue(Files.isExecutable(binary), "executor binary not built; run `make executor`");
+        String previous = System.getProperty("jarness.executor");
+        System.setProperty("jarness.executor", binary.toString());
+        JarnessLayout layout = JarnessLayout.of(base);
+        Files.createDirectories(layout.configDir());
+        Files.writeString(layout.configFile(), """
+                [defaults]
+                template = "standard"
+
+                [execution]
+                mode = "relay"
+                """);
+        try (JarnessRuntime runtime = Jarness.Builder.at(base).build()) {
+            runtime.start();
+            runtime.providers().register(new ScriptedProvider("bash",
+                    "{\"command\":\"printf background-ok\",\"run_in_background\":true}"));
+            runtime.providers().setDefault(new ModelRef(ScriptedProvider.ID, ScriptedProvider.MODEL));
+            Agent agent = runtime.spawn(AgentRequest.builder("standard").build());
+
+            TurnResult result = agent.submit("run in background").get(30, TimeUnit.SECONDS);
+            assertEquals(TurnState.COMPLETED, result.state(), result.error());
+            assertTrue(runtime.jobs().awaitAll(Duration.ofSeconds(10)));
+            assertEquals(1, runtime.jobs().list().size());
+            String output = runtime.jobs().read(runtime.jobs().list().get(0).id()).orElse("");
+            assertTrue(output.contains("background-ok"), output);
         } finally {
             if (previous == null) {
                 System.clearProperty("jarness.executor");

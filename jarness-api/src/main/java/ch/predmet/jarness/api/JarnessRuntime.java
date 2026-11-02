@@ -16,6 +16,7 @@ import ch.predmet.jarness.api.loop.LoopHookRegistry;
 import ch.predmet.jarness.api.observe.Observation;
 import ch.predmet.jarness.api.namespace.NamespaceRegistry;
 import ch.predmet.jarness.api.provider.ProviderRegistry;
+import ch.predmet.jarness.api.preset.Preset;
 import ch.predmet.jarness.api.registry.Registry;
 import ch.predmet.jarness.api.session.SessionStore;
 import ch.predmet.jarness.api.supervisor.Supervisor;
@@ -40,6 +41,9 @@ public interface JarnessRuntime extends AutoCloseable {
 
     /** @return resolved runtime configuration. */
     JarnessConfig config();
+
+    /** @return the active preset, including its default template/model overlay. */
+    Preset activePreset();
 
     /** @return the mod loader singleton. */
     ModLoader modLoader();
