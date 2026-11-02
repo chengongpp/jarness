@@ -15,6 +15,7 @@ import ch.predmet.jarness.api.tool.ToolSpec;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * A tool whose handler lives in an executor.
@@ -55,13 +56,15 @@ public final class RelayTool implements Tool {
             return ToolOutcome.error("background execution is not supported by the relay executor yet");
         }
         Instant deadline = ctx.budget().deadline();
+        String callId = ctx.agent().id() + ":" + (invocation.id() == null || invocation.id().isBlank()
+                ? UUID.randomUUID().toString() : invocation.id());
         ExecRequest request = new ExecRequest(
-                invocation.id(),
+                callId,
                 relayName,
                 invocation.arguments(),
                 deadline,
                 mode(),
-                invocation.id(),
+                callId,
                 ctx.workspace().toString(),
                 ctx.sandbox().id(),
                 ctx.capabilities(),

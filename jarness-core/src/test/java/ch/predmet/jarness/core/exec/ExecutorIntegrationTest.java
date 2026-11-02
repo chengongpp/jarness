@@ -5,6 +5,7 @@ import ch.predmet.jarness.api.capability.Capability;
 import ch.predmet.jarness.api.capability.CapabilitySet;
 import ch.predmet.jarness.api.exec.ExecRequest;
 import ch.predmet.jarness.api.exec.ExecResult;
+import ch.predmet.jarness.api.exec.ExecutionException;
 import ch.predmet.jarness.api.tool.ToolMode;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -14,9 +15,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -127,6 +131,21 @@ class ExecutorIntegrationTest {
                 workspace.toString(), "workspace-write", full, "default"));
         assertTrue(second.ok(), second.error());
         assertEquals("changed", read(workspace.resolve("idem.txt")));
+    }
+
+    @Test
+    void duplicateInFlightCallIdIsRejectedInsteadOfCrossTalking() throws Exception {
+        CapabilitySet full = caps(CapKind.EXEC);
+        CompletableFuture<ExecResult> first = CompletableFuture.supplyAsync(() -> provider.invoke(
+                request("duplicate", "exec.run", Map.of("command", "printf FIRST; sleep 0.3"),
+                        full, "workspace-write")));
+        Thread.sleep(75);
+        ExecutionException duplicate = assertThrows(ExecutionException.class, () -> provider.invoke(
+                request("duplicate", "exec.run", Map.of("command", "printf SECOND"),
+                        full, "workspace-write")));
+        assertEquals(ExecutionException.Reason.REJECTED, duplicate.reason());
+        assertTrue(duplicate.getMessage().contains("duplicate"), duplicate.getMessage());
+        assertTrue(first.get(5, TimeUnit.SECONDS).text().contains("FIRST"));
     }
 
     private static String read(Path path) {

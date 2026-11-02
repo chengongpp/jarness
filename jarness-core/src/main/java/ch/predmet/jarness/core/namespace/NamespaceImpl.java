@@ -5,6 +5,7 @@ import ch.predmet.jarness.api.namespace.NamespaceMetadata;
 import ch.predmet.jarness.api.namespace.NamespaceSpec;
 import ch.predmet.jarness.api.session.SessionStore;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -17,6 +18,7 @@ public final class NamespaceImpl implements Namespace {
     private final SessionStore store;
     private final String defaultTemplateId;
     private final String defaultTemplateVersion;
+    private final List<String> executionProviders;
     private final boolean isDefault;
 
     /**
@@ -30,6 +32,7 @@ public final class NamespaceImpl implements Namespace {
         this.store = spec.store();
         this.defaultTemplateId = spec.defaultTemplateId();
         this.defaultTemplateVersion = spec.defaultTemplateVersion();
+        this.executionProviders = spec.executionProviders();
         this.isDefault = isDefault;
     }
 
@@ -51,6 +54,11 @@ public final class NamespaceImpl implements Namespace {
     @Override
     public SessionStore store() {
         return store;
+    }
+
+    @Override
+    public List<String> executionProviders() {
+        return executionProviders;
     }
 
     @Override

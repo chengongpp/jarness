@@ -10,7 +10,8 @@ import ch.predmet.jarness.api.tool.ToolSpec;
 /** Platform tool: list namespaces. */
 public final class NsListTool implements Tool {
 
-    private final ToolSpec spec = ToolSpec.of("ns_list", "List namespaces with template, model and capability ceiling.");
+    private final ToolSpec spec = ToolSpec.of("ns_list",
+            "List namespaces with cwd, execution route, template, model and capability ceiling.");
 
     @Override
     public ToolSpec spec() {
@@ -25,6 +26,8 @@ public final class NsListTool implements Tool {
                     .append(ns.isDefault() ? " (default)" : "")
                     .append("  template=").append(ns.defaultTemplateId())
                     .append("  cwd=").append(ns.cwd())
+                    .append("  execution=").append(ns.executionProviders().isEmpty()
+                            ? "*" : String.join(",", ns.executionProviders()))
                     .append("  caps=").append(ns.metadata().defaults().kinds())
                     .append('\n');
         }

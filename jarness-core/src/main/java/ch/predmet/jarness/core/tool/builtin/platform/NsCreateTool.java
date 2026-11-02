@@ -54,7 +54,7 @@ public final class NsCreateTool implements Tool {
         NamespaceMetadata metadata = new NamespaceMetadata(
                 id, cwd, Map.of(), model, Map.of(), base.metadata().policies(), base.metadata().defaults());
         Namespace created = ctx.runtime().namespaces().create(new NamespaceSpec(
-                id, metadata, base.store(), template, ""));
+                id, metadata, base.store(), template, "", base.executionProviders()));
         return ToolOutcome.ok("created namespace " + created.id() + " (template " + template + ")");
     }
 }

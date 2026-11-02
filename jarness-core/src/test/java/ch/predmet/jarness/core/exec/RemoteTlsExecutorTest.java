@@ -47,6 +47,7 @@ class RemoteTlsExecutorTest {
         Files.writeString(layout.configFile(), """
                 [defaults]
                 template = "void"
+                execution_providers = ["remote"]
 
                 [execution]
                 mode = "local"

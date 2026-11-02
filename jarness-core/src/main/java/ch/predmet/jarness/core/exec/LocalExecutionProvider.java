@@ -73,6 +73,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
     private final Set<String> tools = new LinkedHashSet<>(DEFAULT_TOOLS);
 
     private volatile boolean closed;
+    private volatile boolean connected;
     private volatile String executorId = "local";
 
     private LocalExecutionProvider(String id, ExecProviderKind kind, String token, Path binary,
@@ -87,6 +88,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
         this.reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
         this.writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         handshake();
+        connected = true;
         this.readerThread = Thread.ofVirtual().name("jarness-executor-reader").start(this::readLoop);
     }
 
@@ -249,7 +251,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
 
     @Override
     public boolean alive() {
-        if (closed || !socket.isConnected() || socket.isClosed()) {
+        if (closed || !connected || !socket.isConnected() || socket.isClosed()) {
             return false;
         }
         return kind == ExecProviderKind.REMOTE || (process != null && process.isAlive());
@@ -259,7 +261,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
     public ExecResult invoke(ExecRequest request) {
         if (!alive()) {
             throw new ExecutionException(ExecutionException.Reason.PROVIDER_DEAD,
-                    "local executor is not running");
+                    "execution provider " + id + " is not running");
         }
         String callId = request.callId() == null || request.callId().isBlank()
                 ? UUID.randomUUID().toString() : request.callId();
@@ -269,7 +271,10 @@ public final class LocalExecutionProvider implements ExecutionProvider {
         AUDIT.info("exec call={} tool={} ns={} workspace={}", callId, request.tool(),
                 request.namespace(), request.workspace());
         CompletableFuture<ExecResult> future = new CompletableFuture<>();
-        pending.put(callId, future);
+        if (pending.putIfAbsent(callId, future) != null) {
+            throw new ExecutionException(ExecutionException.Reason.REJECTED,
+                    "duplicate in-flight executor call id " + callId);
+        }
         try {
             sendCall(request, callId, deadlineMs);
         } catch (IOException e) {
@@ -355,6 +360,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
                 failPending("executor connection lost: " + e.getMessage());
             }
         } finally {
+            connected = false;
             if (!closed) {
                 failPending("executor connection closed");
             }
@@ -445,6 +451,7 @@ public final class LocalExecutionProvider implements ExecutionProvider {
             return;
         }
         closed = true;
+        connected = false;
         try {
             ObjectNode frame = MAPPER.createObjectNode();
             frame.put("type", "shutdown");

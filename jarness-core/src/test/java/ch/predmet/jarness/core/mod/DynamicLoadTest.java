@@ -202,7 +202,7 @@ class DynamicLoadTest {
 
         @Override
         public ch.predmet.jarness.api.exec.ExecutionRegistry execution() {
-            return new ch.predmet.jarness.core.exec.ExecutionRegistryImpl();
+            return new ch.predmet.jarness.core.exec.ExecutionRegistryImpl(() -> this);
         }
 
         @Override

@@ -8,6 +8,8 @@ import ch.predmet.jarness.api.config.JarnessLayout;
 import ch.predmet.jarness.api.exec.ExecProviderKind;
 import ch.predmet.jarness.api.exec.ExecRequest;
 import ch.predmet.jarness.api.exec.ExecResult;
+import ch.predmet.jarness.api.exec.ExecutionException;
+import ch.predmet.jarness.api.exec.ExecutionProvider;
 import ch.predmet.jarness.api.tool.ToolMode;
 import ch.predmet.jarness.core.Jarness;
 import org.junit.jupiter.api.Test;
@@ -19,6 +21,8 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -43,6 +47,7 @@ class RemoteExecutorTest {
         Files.writeString(layout.configFile(), """
                 [defaults]
                 template = "void"
+                execution_providers = ["remote"]
 
                 [execution]
                 mode = "local"
@@ -80,6 +85,21 @@ class RemoteExecutorTest {
                     base.resolve("workspace").toString(), "workspace-write", caps, "default"));
             assertTrue(result.ok(), result.error());
             assertTrue(Files.readString(base.resolve("workspace/remote.txt")).contains("remote executor"));
+
+            ExecutionProvider remote = runtime.execution().providers().stream()
+                    .filter(p -> p.kind() == ExecProviderKind.REMOTE).findFirst().orElseThrow();
+            executor.destroy();
+            executor.waitFor(3, TimeUnit.SECONDS);
+            long disconnectedAt = System.currentTimeMillis() + 5_000;
+            while (remote.alive() && System.currentTimeMillis() < disconnectedAt) {
+                Thread.sleep(25);
+            }
+            assertFalse(remote.alive(), "EOF must mark a remote provider disconnected");
+            ExecutionException noProvider = assertThrows(ExecutionException.class,
+                    () -> runtime.execution().invoke(new ExecRequest("after-disconnect", "fs.read",
+                            Map.of("path", "remote.txt"), null, ToolMode.SYNC, "after-disconnect",
+                            base.resolve("workspace").toString(), "workspace-write", caps, "default")));
+            assertTrue(noProvider.getMessage().contains("namespace \"default\""), noProvider.getMessage());
         } finally {
             if (executor != null) {
                 executor.destroy();

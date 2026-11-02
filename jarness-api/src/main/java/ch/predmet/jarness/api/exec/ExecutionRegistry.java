@@ -1,7 +1,5 @@
 package ch.predmet.jarness.api.exec;
 
-import ch.predmet.jarness.api.capability.CapabilitySet;
-
 import java.util.List;
 import java.util.Optional;
 
@@ -33,13 +31,12 @@ public interface ExecutionRegistry {
     List<ExecutionProvider> providers();
 
     /**
-     * Select a live provider for a tool and capability view.
+     * Select a live provider for one call, honouring the namespace's provider order and kind rules.
      *
-     * @param tool  executor tool name
-     * @param caps  capabilities the call holds
+     * @param request execution request, including its namespace
      * @return the provider, or empty
      */
-    Optional<ExecutionProvider> select(String tool, CapabilitySet caps);
+    Optional<ExecutionProvider> select(ExecRequest request);
 
     /**
      * Invoke a call through the best provider.
