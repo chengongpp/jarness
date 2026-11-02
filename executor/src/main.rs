@@ -1202,6 +1202,10 @@ fn fs_target(
         } else {
             relative
         };
+        if kind == "FS_WRITE" {
+            std::fs::create_dir_all(&root)
+                .map_err(|e| format!("cannot create capability root {}: {e}", root.display()))?;
+        }
         let dir = Dir::open_ambient_dir(&root, ambient_authority())
             .map_err(|e| format!("cannot open capability root {}: {e}", root.display()))?;
         return Ok(FsTarget { dir, relative });

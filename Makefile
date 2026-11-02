@@ -36,7 +36,7 @@ test:
 
 ## it: live-endpoint integration tests (uses installed providers.toml, falls back to tmp/endpoint.txt)
 it: executor
-	$(MVN) -pl jarness-core test -Djarness.it=true -Djarness.excludedGroups= -Dgroups=integration \
+	$(MVN) -pl jarness-core -am test -Djarness.it=true -Djarness.excludedGroups= -Dgroups=integration \
 		-Djarness.executor=$(abspath $(DIST_EXECUTOR))
 
 ## clean: remove build outputs and dist
