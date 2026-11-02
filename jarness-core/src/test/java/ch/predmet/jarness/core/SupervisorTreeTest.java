@@ -269,13 +269,17 @@ class SupervisorTreeTest {
             lead.session().append(Message.user("context before fork"));
 
             long forkedPid = runtime.supervisor().fork(rootPid, "default",
-                    AgentManifest.of("void"), null, null);
+                    AgentManifest.builder(null).name("forked").modId("custom.mod")
+                            .templateVersion("1").meta("marker", "kept").build(), null, null);
             Agent forked = runtime.supervisor().agent(forkedPid);
 
             assertNotEquals(lead.session().id(), forked.session().id());
             assertEquals(1, forked.session().messages().size());
             assertEquals("context before fork", forked.session().messages().get(0).text());
             assertEquals(ch.predmet.jarness.api.kernel.Origin.FORK, forked.manifest().origin());
+            assertEquals("custom.mod", forked.manifest().modId());
+            assertEquals("1", forked.manifest().templateVersion());
+            assertEquals("kept", forked.manifest().metadata().get("marker"));
             assertEquals(rootPid, forked.parentPid());
         }
     }

@@ -48,7 +48,7 @@ public final class AnthropicProvider extends AbstractHttpProvider {
     @Override
     public ChatResponse complete(ChatRequest request, StreamSink sink) {
         ObjectNode body = buildRequest(request);
-        JsonNode root = http.postJson(messagesUrl(), body, VERSION_HEADER);
+        JsonNode root = http.postJson(messagesUrl(), body, VERSION_HEADER, request.deadline());
         String raw = root.toString();
 
         String id = orEmpty(HttpTransport.textOf(root.get("id")));

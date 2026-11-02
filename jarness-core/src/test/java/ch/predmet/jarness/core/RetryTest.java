@@ -52,6 +52,19 @@ class RetryTest {
     }
 
     @Test
+    void retriesTransportFailuresWithoutAnHttpStatus() throws Exception {
+        try (JarnessRuntime runtime = runtime()) {
+            FlakyProvider provider = new FlakyProvider(2, -1, true);
+            runtime.providers().register(provider);
+            runtime.providers().setDefault(new ModelRef(FlakyProvider.ID, FlakyProvider.MODEL));
+            Agent agent = runtime.spawn(AgentRequest.builder("void").build());
+            TurnResult result = agent.submit("hi").get(10, TimeUnit.SECONDS);
+            assertEquals(TurnState.COMPLETED, result.state(), result.error());
+            assertEquals(3, provider.calls.get());
+        }
+    }
+
+    @Test
     void doesNotRetryNonRetryableFailures() throws Exception {
         try (JarnessRuntime runtime = runtime()) {
             FlakyProvider provider = new FlakyProvider(5, 400);
@@ -91,11 +104,17 @@ class RetryTest {
 
         private final int failures;
         private final int status;
+        private final boolean transport;
         final AtomicInteger calls = new AtomicInteger();
 
         FlakyProvider(int failures, int status) {
+            this(failures, status, false);
+        }
+
+        FlakyProvider(int failures, int status, boolean transport) {
             this.failures = failures;
             this.status = status;
+            this.transport = transport;
         }
 
         @Override
@@ -128,6 +147,9 @@ class RetryTest {
         public ChatResponse complete(ChatRequest request, StreamSink sink) {
             int call = calls.incrementAndGet();
             if (call <= failures) {
+                if (transport) {
+                    throw ProviderException.transport("network timeout", new java.io.IOException("timeout"));
+                }
                 throw new ProviderException("boom", status, null);
             }
             return new ChatResponse("ok", new Message(null, Role.ASSISTANT,

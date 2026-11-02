@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -82,7 +83,7 @@ public final class SupervisorImpl implements Supervisor {
     private final CapabilityDerivation derivation = new CapabilityDerivation();
     private final CapabilitySet rootCaps = CapabilitySet.root();
     private final AtomicLong nextPid = new AtomicLong(1L);
-    private final Map<String, Integer> restartAttempts = new HashMap<>();
+    private final Map<String, Integer> restartAttempts = new ConcurrentHashMap<>();
     private final AtomicLong nextCapId = new AtomicLong(1L);
     private final ReentrantLock lock = new ReentrantLock();
 
@@ -205,14 +206,9 @@ public final class SupervisorImpl implements Supervisor {
         }
         AgentManifest forked = manifest.asFork();
         if (forked.templateId() == null) {
-            forked = AgentManifest.builder(parent.template().id())
-                    .name(forked.name())
-                    .loopRef(forked.loopRef())
-                    .restart(forked.restart())
-                    .orphan(forked.orphan())
-                    .origin(Origin.FORK)
-                    .modelProfile(forked.modelProfileId())
-                    .build();
+            forked = new AgentManifest(forked.name(), forked.modId(), forked.loopRef(), forked.restart(),
+                    forked.orphan(), Origin.FORK, parent.template().id(), forked.templateVersion(),
+                    forked.modelProfileId(), forked.metadata());
         }
         String nsId = namespaceId != null ? namespaceId : parent.namespaceId();
         CapabilitySet requested = requestedCaps != null ? requestedCaps : parent.capabilities();
@@ -1015,14 +1011,27 @@ public final class SupervisorImpl implements Supervisor {
                 return;
             }
             long parent = parentPid != ROOT_PID && agentOrNull(parentPid) == null ? ROOT_PID : parentPid;
-            AgentRequest request = AgentRequest.builder(templateId)
+            AgentRequest original = agent instanceof AgentImpl impl ? impl.creationRequest() : null;
+            AgentRequest.Builder requestBuilder = AgentRequest.builder(templateId)
                     .name(name)
                     .sessionId(sessionId)
                     .namespace(namespaceId)
                     .parent(parent)
                     .capabilities(caps)
-                    .budget(budget)
-                    .build();
+                    .budget(budget);
+            if (original != null) {
+                if (original.template() != null) {
+                    requestBuilder.template(original.template());
+                }
+                requestBuilder.systemPrompt(original.systemPrompt())
+                        .tools(original.toolNames())
+                        .forceResume(original.forceResume());
+                if (original.model() != null) {
+                    requestBuilder.model(original.model());
+                }
+                original.metadata().forEach(requestBuilder::meta);
+            }
+            AgentRequest request = requestBuilder.build();
             try {
                 long pid = spawnInternal(parent, namespaceId, manifest, caps, budget, request, null);
                 Agent restarted = agentOrNull(pid);

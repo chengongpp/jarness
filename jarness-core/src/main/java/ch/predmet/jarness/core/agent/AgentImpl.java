@@ -167,7 +167,7 @@ public final class AgentImpl implements Agent {
     private final StreamSink cancellationSink = new StreamSink() {
         @Override
         public boolean cancelled() {
-            return turnCancel || stopFlag;
+            return turnCancel || stopFlag || budget.get().expired();
         }
     };
 
@@ -431,6 +431,11 @@ public final class AgentImpl implements Agent {
     @Override
     public AgentManifest manifest() {
         return manifest;
+    }
+
+    /** @return the complete creation input retained for restart. */
+    AgentRequest creationRequest() {
+        return request;
     }
 
     @Override
@@ -858,6 +863,10 @@ public final class AgentImpl implements Agent {
                 if (maxTokens <= 0) {
                     maxTokens = runtime.config().maxTokens();
                 }
+                long tokensLeft = budget.get().tokensLeft();
+                if (tokensLeft >= 0) {
+                    maxTokens = (int) Math.min(maxTokens, tokensLeft);
+                }
                 Double temperature = template.temperature() != null
                         ? template.temperature()
                         : Double.valueOf(modelTemperature());
@@ -880,7 +889,8 @@ public final class AgentImpl implements Agent {
                 try {
                     Provider provider = providerFor(event.model());
                     ChatRequest chatRequest = new ChatRequest(event.model(), event.system(), event.messages(),
-                            event.tools(), event.maxTokens(), event.temperature(), List.of(), Map.of());
+                            event.tools(), event.maxTokens(), event.temperature(), List.of(), Map.of(),
+                            budget.get().deadline());
                     response = completeWithRetry(provider, chatRequest);
                 } catch (ProviderException e) {
                     log.warn("provider call failed: {}", e.getMessage());

@@ -14,6 +14,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 
@@ -85,14 +86,19 @@ final class HttpTransport {
      * @throws ProviderException on transport failures and non-2xx statuses
      */
     JsonNode postJson(String url, ObjectNode body, Map<String, String> extraHeaders) {
+        return postJson(url, body, extraHeaders, null);
+    }
+
+    JsonNode postJson(String url, ObjectNode body, Map<String, String> extraHeaders, Instant deadline) {
         HttpResponse<String> response;
         try {
-            response = client.send(request(url, body, extraHeaders)
+            response = client.send(request(url, body, extraHeaders, deadline)
                             .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
                             .build(),
                     HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            throw new ProviderException("request to profile \"" + profile.id() + "\" failed: " + e.getMessage(), e);
+            throw ProviderException.transport("request to profile \"" + profile.id() + "\" failed: "
+                    + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ProviderException("request to profile \"" + profile.id() + "\" interrupted", e);
@@ -103,7 +109,7 @@ final class HttpTransport {
         try {
             return MAPPER.readTree(response.body());
         } catch (IOException e) {
-            throw new ProviderException("profile \"" + profile.id() + "\" returned non-JSON body: "
+            throw ProviderException.parse("profile \"" + profile.id() + "\" returned non-JSON body: "
                     + snippet(response.body()), e);
         }
     }
@@ -115,14 +121,20 @@ final class HttpTransport {
      * @throws ProviderException on transport failures and non-2xx statuses
      */
     HttpResponse<InputStream> postStream(String url, ObjectNode body, Map<String, String> extraHeaders) {
+        return postStream(url, body, extraHeaders, null);
+    }
+
+    HttpResponse<InputStream> postStream(String url, ObjectNode body, Map<String, String> extraHeaders,
+                                         Instant deadline) {
         HttpResponse<InputStream> response;
         try {
-            response = client.send(request(url, body, extraHeaders)
+            response = client.send(request(url, body, extraHeaders, deadline)
                             .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
                             .build(),
                     HttpResponse.BodyHandlers.ofInputStream());
         } catch (IOException e) {
-            throw new ProviderException("request to profile \"" + profile.id() + "\" failed: " + e.getMessage(), e);
+            throw ProviderException.transport("request to profile \"" + profile.id() + "\" failed: "
+                    + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ProviderException("request to profile \"" + profile.id() + "\" interrupted", e);
@@ -139,9 +151,10 @@ final class HttpTransport {
         return response;
     }
 
-    private HttpRequest.Builder request(String url, ObjectNode body, Map<String, String> extraHeaders) {
+    private HttpRequest.Builder request(String url, ObjectNode body, Map<String, String> extraHeaders,
+                                        Instant deadline) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-                .timeout(requestTimeout)
+                .timeout(effectiveTimeout(deadline))
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json");
         if (profile.hasApiKey()) {
@@ -155,6 +168,17 @@ final class HttpTransport {
             extraHeaders.forEach(builder::header);
         }
         return builder;
+    }
+
+    private Duration effectiveTimeout(Instant deadline) {
+        if (deadline == null) {
+            return requestTimeout;
+        }
+        Duration remaining = Duration.between(Instant.now(), deadline);
+        if (remaining.isNegative() || remaining.isZero()) {
+            return Duration.ofMillis(1);
+        }
+        return remaining.compareTo(requestTimeout) < 0 ? remaining : requestTimeout;
     }
 
     private ProviderException statusError(int status, String body) {

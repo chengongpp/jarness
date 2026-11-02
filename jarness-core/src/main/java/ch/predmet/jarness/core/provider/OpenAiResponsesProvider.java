@@ -44,7 +44,7 @@ public final class OpenAiResponsesProvider extends AbstractHttpProvider {
     @Override
     public ChatResponse complete(ChatRequest request, StreamSink sink) {
         ObjectNode body = buildRequest(request);
-        JsonNode root = http.postJson(http.baseUrl() + "/responses", body, Map.of());
+        JsonNode root = http.postJson(http.baseUrl() + "/responses", body, Map.of(), request.deadline());
         String raw = root.toString();
 
         String id = orEmpty(HttpTransport.textOf(root.get("id")));

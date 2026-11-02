@@ -60,7 +60,7 @@ public final class OpenAiCompatProvider extends AbstractHttpProvider {
     public ChatResponse complete(ChatRequest request, StreamSink sink) {
         ObjectNode body = buildRequest(request);
         HttpResponse<InputStream> response =
-                http.postStream(http.baseUrl() + "/chat/completions", body, Map.of());
+                http.postStream(http.baseUrl() + "/chat/completions", body, Map.of(), request.deadline());
         String contentType = HttpTransport.contentType(response);
 
         String id = "";
@@ -97,8 +97,7 @@ public final class OpenAiCompatProvider extends AbstractHttpProvider {
                 try {
                     chunk = HttpTransport.MAPPER.readTree(payload);
                 } catch (IOException e) {
-                    LOG.debug("profile {}: skipping unparsable SSE chunk", id(), e);
-                    continue;
+                    throw ProviderException.parse("profile " + id() + " returned an unparsable SSE chunk", e);
                 }
                 if (!started) {
                     id = orEmpty(HttpTransport.textOf(chunk.get("id")));
@@ -141,7 +140,8 @@ public final class OpenAiCompatProvider extends AbstractHttpProvider {
                 }
             }
         } catch (IOException e) {
-            throw new ProviderException("stream from profile \"" + id() + "\" failed: " + e.getMessage(), e);
+            throw ProviderException.transport("stream from profile \"" + id() + "\" failed: "
+                    + e.getMessage(), e);
         }
 
         if (!sawData && contentType.contains("json") && !nonSseBody.isEmpty()) {
@@ -277,7 +277,7 @@ public final class OpenAiCompatProvider extends AbstractHttpProvider {
         try {
             root = HttpTransport.MAPPER.readTree(body);
         } catch (IOException e) {
-            throw new ProviderException("profile \"" + id() + "\" returned an unparsable response", e);
+            throw ProviderException.parse("profile \"" + id() + "\" returned an unparsable response", e);
         }
         String id = orEmpty(HttpTransport.textOf(root.get("id")));
         sink.onStart(id);

@@ -8,6 +8,7 @@ public class ProviderException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
     private final int statusCode;
+    private final Boolean retryableOverride;
 
     /**
      * @param message human readable failure
@@ -30,8 +31,23 @@ public class ProviderException extends RuntimeException {
      * @param cause      underlying failure
      */
     public ProviderException(String message, int statusCode, Throwable cause) {
+        this(message, statusCode, cause, null);
+    }
+
+    private ProviderException(String message, int statusCode, Throwable cause, Boolean retryable) {
         super(message, cause);
         this.statusCode = statusCode;
+        this.retryableOverride = retryable;
+    }
+
+    /** @return a retryable transport failure (including connect/read timeouts). */
+    public static ProviderException transport(String message, Throwable cause) {
+        return new ProviderException(message, -1, cause, true);
+    }
+
+    /** @return a retryable malformed-response failure. */
+    public static ProviderException parse(String message, Throwable cause) {
+        return new ProviderException(message, -1, cause, true);
     }
 
     /** @return the HTTP status code, or {@code -1} when the failure was not an HTTP error. */
@@ -41,6 +57,7 @@ public class ProviderException extends RuntimeException {
 
     /** @return whether the failure is worth retrying without changing the request. */
     public boolean retryable() {
-        return statusCode == 408 || statusCode == 409 || statusCode == 429 || statusCode >= 500;
+        return retryableOverride != null ? retryableOverride
+                : statusCode == 408 || statusCode == 409 || statusCode == 429 || statusCode >= 500;
     }
 }
